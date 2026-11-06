@@ -1,0 +1,221 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  @font-face { font-family: "Schibsted Grotesk"; src: url("fonts/schibsted-grotesk-var.woff2") format("woff2"); font-weight: 400 900; }
+  /* Freeze-frame marker: a still of the screen in an opaque window, drawn on with a highlighter.
+     Opaque is the point: a full-screen transparent window repaints slowly on Windows, which made drawing lag. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; user-select: none; font-family: "Schibsted Grotesk", "Segoe UI", sans-serif; }
+  #shot { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #ink { position: fixed; inset: 0; width: 100vw; height: 100vh; touch-action: none;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='12' r='9' fill='rgba(47,122,255,0.35)' stroke='%231f5fd6' stroke-width='1.5'/%3E%3Ccircle cx='12' cy='12' r='1.5' fill='%231f5fd6'/%3E%3C/svg%3E") 12 12, crosshair; }
+  /* A thin frame says "this is a still, you're marking" without dimming what you're marking. */
+  #frame { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 3px rgba(47, 122, 255, .85); }
+  #bar { position: fixed; left: 50%; top: 52px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px;
+    padding: 6px 6px 6px 14px; border-radius: 14px; background: #0c0d10; color: #f2f3f5; font-size: 13px;
+    box-shadow: 0 8px 26px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.06); }
+  #count { padding-right: 6px; color: #d9dce2; white-space: nowrap; }
+  button { border: 0; border-radius: 9px; height: 28px; padding: 0 11px; font: 600 12px "Schibsted Grotesk", "Segoe UI", sans-serif; cursor: pointer; background: #23262d; color: #f2f3f5; display: inline-flex; align-items: center; gap: 6px; }
+  button:hover:not(:disabled) { background: #30343d; }
+  button.primary { background: #2f7aff; }
+  button.primary:hover:not(:disabled) { background: #4689ff; }
+  button:disabled { opacity: .4; cursor: default; }
+  kbd { font: 10.5px "Schibsted Grotesk", sans-serif; opacity: .7; }
+  body.done #bar, body.done #frame { display: none; }
+</style>
+</head>
+<body>
+<img id="shot" alt="">
+<canvas id="ink"></canvas>
+<div id="frame"></div>
+<div id="bar">
+  <span id="count">Click something to explain it, or draw over things to ask</span>
+  <button id="undo" disabled title="Ctrl+Z">Undo</button>
+  <button id="ask" class="primary" disabled>Ask <kbd>Enter</kbd></button>
+  <button id="cancel">Cancel <kbd>Esc</kbd></button>
+</div>
+<script>
+  const PEN = 18;
+  const MAX_IMAGE = 1600; // longest side, physical px, of the image sent with the question
+  const shot = document.getElementById("shot");
+  const canvas = document.getElementById("ink");
+  const ctx = canvas.getContext("2d");
+  const strokes = [];
+  let finished = false;
+  let live = null;
+  let queued = false;
+
+  // Smooth a pointer trail into curves through the midpoints, so strokes read as pen, not polyline.
+  function pathOf(pts) {
+    if (pts.length === 1) return `M${pts[0].x} ${pts[0].y} l0.01 0`;
+    let d = `M${pts[0].x} ${pts[0].y}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2;
+      d += ` Q${pts[i].x} ${pts[i].y} ${mx} ${my}`;
+    }
+    const last = pts.at(-1);
+    return d + ` L${last.x} ${last.y}`;
+  }
+
+  function paint(c, list, liveStroke) {
+    c.lineCap = c.lineJoin = "round";
+    c.lineWidth = PEN;
+    for (const s of list) {
+      c.strokeStyle = "rgba(47, 122, 255, 0.36)";
+      c.stroke(new Path2D(pathOf(s.points)));
+    }
+    if (liveStroke) {
+      c.strokeStyle = "rgba(47, 122, 255, 0.5)";
+      c.stroke(new Path2D(pathOf(liveStroke.points)));
+    }
+    for (const s of list) {
+      const { x, y } = s.points[0];
+      c.beginPath();
+      c.arc(x - 14, y - 14, 11, 0, Math.PI * 2);
+      c.fillStyle = "#1f5fd6";
+      c.fill();
+      c.lineWidth = 2;
+      c.strokeStyle = "#fff";
+      c.stroke();
+      c.lineWidth = PEN;
+      c.fillStyle = "#fff";
+      c.font = "700 13px 'Schibsted Grotesk', 'Segoe UI', sans-serif";
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText(String(s.n), x - 14, y - 13.5);
+    }
+  }
+
+  function render() {
+    queued = false;
+    const dpr = devicePixelRatio;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    paint(ctx, strokes, live);
+  }
+  const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(render); } };
+
+  function fit() {
+    canvas.width = Math.round(innerWidth * devicePixelRatio);
+    canvas.height = Math.round(innerHeight * devicePixelRatio);
+    schedule();
+  }
+  addEventListener("resize", fit);
+  fit();
+
+  function update() {
+    const n = strokes.length;
+    document.getElementById("count").textContent = n ? `${n} marked · keep going or ask` : "Click something to explain it, or draw over things to ask";
+    document.getElementById("undo").disabled = !n;
+    document.getElementById("ask").disabled = !n;
+    window.buddy.markCount(n);
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    canvas.setPointerCapture(e.pointerId);
+    live = { points: [{ x: e.clientX, y: e.clientY }], at: performance.now() };
+    schedule();
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!live) return;
+    // Coalesced events carry every sample the OS saw between frames: smooth lines at any mouse speed.
+    for (const ev of e.getCoalescedEvents?.() ?? [e]) {
+      const last = live.points.at(-1);
+      if (Math.hypot(ev.clientX - last.x, ev.clientY - last.y) >= 1.5) live.points.push({ x: ev.clientX, y: ev.clientY });
+    }
+    if (live.points.length > 4000) live.points.length = 4000;
+    schedule();
+  });
+  // A quick click with nothing marked yet means "explain this": no drawing, no Enter.
+  const isClick = (s) => {
+    const b = bboxOf(s.points, 0);
+    return Math.hypot(b.r - b.x, b.b - b.y) < 6 && performance.now() - s.at < 500;
+  };
+  const endStroke = () => {
+    if (!live) return;
+    if (!strokes.length && !finished && isClick(live)) {
+      finished = true;
+      document.body.classList.add("done");
+      window.buddy.markClick(live.points[0]);
+      live = null;
+      return;
+    }
+    strokes.push({ n: strokes.length + 1, points: live.points });
+    live = null;
+    schedule();
+    update();
+  };
+  canvas.addEventListener("pointerup", endStroke);
+  canvas.addEventListener("pointercancel", endStroke);
+
+  function undo() {
+    if (live || !strokes.length) return;
+    strokes.pop();
+    schedule();
+    update();
+  }
+
+  const bboxOf = (pts, pad) => {
+    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+    return { x: Math.min(...xs) - pad, y: Math.min(...ys) - pad, r: Math.max(...xs) + pad, b: Math.max(...ys) + pad };
+  };
+
+  // The image sent with the question: the marked area of the still, padded for context, strokes drawn on.
+  function compose() {
+    const sf = shot.naturalWidth / innerWidth;
+    const W = shot.naturalWidth, H = shot.naturalHeight;
+    const boxes = strokes.map((s) => bboxOf(s.points, PEN));
+    const u = { x: Math.min(...boxes.map((b) => b.x)) * sf, y: Math.min(...boxes.map((b) => b.y)) * sf,
+                r: Math.max(...boxes.map((b) => b.r)) * sf, b: Math.max(...boxes.map((b) => b.b)) * sf };
+    const w = Math.min(W, Math.max(u.r - u.x + 240 * sf, 900));
+    const h = Math.min(H, Math.max(u.b - u.y + 200 * sf, 600));
+    const sx = Math.round(Math.min(Math.max((u.x + u.r) / 2 - w / 2, 0), W - w));
+    const sy = Math.round(Math.min(Math.max((u.y + u.b) / 2 - h / 2, 0), H - h));
+    const k = Math.min(1, MAX_IMAGE / Math.max(w, h));
+    const out = document.createElement("canvas");
+    out.width = Math.round(w * k);
+    out.height = Math.round(h * k);
+    const c = out.getContext("2d");
+    c.drawImage(shot, sx, sy, w, h, 0, 0, out.width, out.height);
+    c.setTransform(sf * k, 0, 0, sf * k, -sx * k, -sy * k);
+    paint(c, strokes, null);
+    return out.toDataURL("image/png").split(",")[1];
+  }
+
+  function finish() {
+    if (finished || live) return;
+    if (!strokes.length) return window.buddy.markCancel();
+    finished = true;
+    const image = compose();
+    document.body.classList.add("done");
+    window.buddy.markFinish({ image, strokes: strokes.map((s) => ({ n: s.n, points: s.points })) });
+  }
+
+  document.getElementById("undo").addEventListener("click", undo);
+  document.getElementById("ask").addEventListener("click", finish);
+  document.getElementById("cancel").addEventListener("click", () => window.buddy.markCancel());
+  addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish();
+    else if (e.key === "Escape") window.buddy.markCancel();
+    else if ((e.ctrlKey && e.key.toLowerCase() === "z") || e.key === "Backspace") undo();
+  });
+  addEventListener("contextmenu", (e) => { e.preventDefault(); undo(); });
+
+  window.buddy.onMarkStart(({ png }) => {
+    shot.onload = () => { fit(); window.buddy.markReady(); };
+    shot.src = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  });
+  window.buddy.onMarkCommand((cmd) => (cmd === "done" ? finish() : cmd === "undo" ? undo() : null));
+  // Dev hook: strokes injected by main (BUDDY_MARK_TEST), drawn as if by hand, then asked.
+  window.buddy.onMarkInject((list) => {
+    for (const points of list) strokes.push({ n: strokes.length + 1, points });
+    schedule();
+    update();
+    setTimeout(finish, 300);
+  });
+</script>
+</body>
+</html>

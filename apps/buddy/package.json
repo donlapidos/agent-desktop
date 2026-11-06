@@ -1,0 +1,19 @@
+{
+  "name": "desktop-buddy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Clicky-style desktop buddy: points at your screen to teach, and drives your apps when you ask. Built on agent-desktop.",
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "node scripts/smoke.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.5.0",
+    "docx": "^9.5.1"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3"
+  }
+}

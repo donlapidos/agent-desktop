@@ -1,0 +1,2 @@
+Alegreya Sans (Juan Pablo del Peral, Huerta Tipografica), Patrick Hand (Patrick Wagesreiter) and Schibsted Grotesk (Bakken & Baeck), all SIL Open Font License 1.1.
+Source: Google Fonts (latin subsets), fetched 2026-11-05 (Schibsted Grotesk 2026-11-06). https://openfontlicense.org

@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  @font-face { font-family: "Schibsted Grotesk"; src: url("fonts/schibsted-grotesk-var.woff2") format("woff2"); font-weight: 400 900; }
+  :root { --buddy: #2f7aff; --amber: #f5a524; --green: #22c55e; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font: 13px/1 "Schibsted Grotesk", "Segoe UI", sans-serif; user-select: none; }
+  body { display: flex; justify-content: center; align-items: flex-start; padding-top: 6px; }
+  #pill {
+    display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 14px; min-width: 120px; max-width: 440px;
+    border-radius: 17px; background: #0c0d10; color: #f2f3f5; box-shadow: 0 6px 22px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.06);
+    transition: min-width .28s cubic-bezier(.2,.8,.2,1), padding .28s;
+  }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--buddy); flex: none; box-shadow: 0 0 10px var(--buddy); transition: background .2s, box-shadow .2s; }
+  /* Idle: Buddy is on but resting. Active: the bubble is open and listening. */
+  body[data-state="idle"] #dot { background: #4a6fae; box-shadow: none; }
+  body[data-state="idle"] #label { color: #9aa1ad; }
+  body[data-state="active"] #dot { box-shadow: 0 0 12px var(--buddy), 0 0 3px var(--buddy); }
+  #hint { display: none; font: 10.5px "Schibsted Grotesk", sans-serif; color: #6f7682; }
+  body[data-state="idle"] #pill:not(.open) #hint, body[data-state="active"] #hint { display: inline; }
+  body[data-state="busy"] #dot { animation: breathe 1.1s ease-in-out infinite; }
+  body[data-state="confirm"] #dot { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: breathe .8s ease-in-out infinite; }
+  body[data-state="picking"] #dot { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+  body[data-state="done"] #dot { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  @keyframes breathe { 50% { transform: scale(.6); opacity: .55; } }
+  #label { flex: 1; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #d9dce2; }
+  #actions { display: none; gap: 4px; }
+  #pill.open { min-width: 340px; }
+  /* While the chat is open the pill widens to the chat card (388px wide with padding), so the two read as one. */
+  body.attached #pill { min-width: 360px; transition-duration: .32s; }
+  #pill.open #actions { display: flex; }
+  button { border: 0; border-radius: 11px; height: 24px; padding: 0 10px; font: 600 12px "Schibsted Grotesk", "Segoe UI", sans-serif; cursor: pointer; background: #23262d; color: #f2f3f5; }
+  button:hover { background: var(--buddy); }
+  kbd { font: 10.5px "Schibsted Grotesk", sans-serif; color: #8b919c; margin-left: 4px; }
+  /* Task chips: one per task window, numbered, with the task's own status dot. Click to open or tuck away. */
+  #chips { display: none; gap: 4px; flex: none; padding-left: 8px; border-left: 1px solid rgba(255,255,255,.09); }
+  #chips.on { display: flex; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px 0 6px; border-radius: 11px; background: #1a1c21; color: #c9cdd4; font: 600 11.5px "Schibsted Grotesk", sans-serif; font-variant-numeric: tabular-nums; }
+  .chip:hover { background: #2a2d34; }
+  .chip.open { box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); color: #f2f3f5; }
+  .chip i { width: 7px; height: 7px; border-radius: 50%; background: #4a6fae; }
+  .chip[data-state="working"] i { background: var(--buddy); box-shadow: 0 0 8px var(--buddy); animation: breathe 1.1s ease-in-out infinite; }
+  .chip[data-state="confirm"] i { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: breathe .8s ease-in-out infinite; }
+  .chip[data-state="done"] i { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .chip[data-state="error"] i { background: #ff8a5c; }
+  @media (prefers-reduced-motion: reduce) { #pill { transition: none; } #dot, .chip i { animation: none !important; } }
+</style>
+</head>
+<body data-state="idle">
+<div id="pill">
+  <span id="dot"></span>
+  <span id="label">Buddy</span>
+  <span id="hint"></span>
+  <span id="chips"></span>
+  <span id="actions">
+    <button id="ask">Ask</button>
+    <button id="mark" title="Ctrl+Alt+M: click something to explain it, or draw over things to ask about them">Mark</button>
+    <button id="task" title="Open a task window: an agent with its own conversation that works while you do other things">Task</button>
+  </span>
+</div>
+<script>
+  const pill = document.getElementById("pill");
+  const label = document.getElementById("label");
+  let state = "idle", idleTimer;
+
+  pill.addEventListener("mouseenter", () => { window.buddy.islandHover(true); if (state === "idle") pill.classList.add("open"); });
+  pill.addEventListener("mouseleave", () => { window.buddy.islandHover(false); pill.classList.remove("open"); });
+  document.getElementById("ask").addEventListener("click", () => window.buddy.islandAction("ask"));
+  document.getElementById("mark").addEventListener("click", () => window.buddy.islandAction("mark"));
+  document.getElementById("task").addEventListener("click", () => window.buddy.islandAction("task"));
+  const STATE_WORDS = { idle: "ready", working: "working", confirm: "needs your OK", done: "finished", error: "hit a problem" };
+  window.buddy.onTasks((list) => {
+    const box = document.getElementById("chips");
+    box.replaceChildren(...list.map((t) => {
+      const chip = document.createElement("button");
+      chip.className = "chip" + (t.open ? " open" : "");
+      chip.dataset.state = t.state;
+      chip.title = `${t.title}: ${STATE_WORDS[t.state] ?? t.state} · click to ${t.open ? "tuck away" : "open"}`;
+      chip.append(document.createElement("i"), String(t.n));
+      chip.addEventListener("click", () => window.buddy.islandAction("task:" + t.id));
+      return chip;
+    }));
+    box.classList.toggle("on", list.length > 0);
+  });
+  window.buddy.onIslandAttach((on) => document.body.classList.toggle("attached", on));
+  label.addEventListener("click", () => window.buddy.islandAction(state === "idle" ? "ask" : "show"));
+  const hint = document.getElementById("hint");
+
+  window.buddy.onIsland(({ state: s, text, hotkey = "" }) => {
+    document.getElementById("ask").title = hotkey;
+    state = s;
+    document.body.dataset.state = s;
+    label.textContent = text || "Buddy";
+    hint.textContent = s === "active" ? `${hotkey} to close` : hotkey;
+    if (s !== "idle") pill.classList.remove("open");
+    clearTimeout(idleTimer);
+    if (s === "done") idleTimer = setTimeout(() => window.buddy.islandAction("settle"), 4000);
+  });
+</script>
+</body>
+</html>

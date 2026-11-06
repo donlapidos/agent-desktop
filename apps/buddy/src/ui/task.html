@@ -1,0 +1,179 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  @font-face { font-family: "Schibsted Grotesk"; src: url("fonts/schibsted-grotesk-var.woff2") format("woff2"); font-weight: 400 900; }
+  /* A task window is the island's chat given its own room: same near-black, same type, Buddy-blue only for
+     what is live (the working dot, the focused field, the primary button). */
+  :root {
+    --bg: #0c0d10; --fg: #eef0f3; --muted: #8b919c; --faint: #5d636e; --line: rgba(255,255,255,.07);
+    --field: #1a1c21; --field-hover: #23262d; --buddy: #2f7aff; --amber: #f5a524; --green: #22c55e; --danger: #ff8a5c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.5 "Schibsted Grotesk", "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+  body { display: flex; flex-direction: column; box-shadow: inset 0 0 0 1px var(--line); }
+
+  header { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 6px 0 14px; -webkit-app-region: drag; user-select: none; flex: none; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #4a6fae; flex: none; transition: background .2s, box-shadow .2s; }
+  body[data-state="working"] .dot { background: var(--buddy); box-shadow: 0 0 10px var(--buddy); animation: breathe 1.1s ease-in-out infinite; }
+  body[data-state="confirm"] .dot { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: breathe .8s ease-in-out infinite; }
+  body[data-state="done"] .dot { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  body[data-state="error"] .dot { background: var(--danger); }
+  @keyframes breathe { 50% { transform: scale(.6); opacity: .55; } }
+  .titles { flex: 1; min-width: 0; line-height: 1.2; }
+  #title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #where { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .win { -webkit-app-region: no-drag; width: 32px; height: 30px; border: 0; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+  .win:hover { background: var(--field); color: var(--fg); }
+  .win.close:hover { background: #3a1e1a; color: var(--danger); }
+  .win svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round; }
+
+  #log { flex: 1; overflow-y: auto; padding: 6px 16px 10px; display: flex; flex-direction: column; gap: 14px; }
+  #log::-webkit-scrollbar { width: 8px; }
+  #log::-webkit-scrollbar-thumb { background: #2a2d34; border-radius: 4px; }
+  #log:empty::before { content: "What should this task do? It works on its own while you get on with other things, and asks before it clicks or types anything."; color: var(--muted); margin-top: 8px; }
+  .user { align-self: flex-end; max-width: 85%; padding: 8px 12px; border-radius: 14px 14px 4px 14px; background: var(--field); white-space: pre-wrap; }
+  .buddy { white-space: pre-wrap; }
+  .turn { display: grid; gap: 8px; }
+  .steps { display: grid; gap: 2px; font-size: 12.5px; color: var(--faint); }
+  .steps span::before { content: "· "; }
+  .steps span:last-child { color: var(--muted); }
+  .turn.done .steps span:last-child { color: var(--faint); }
+
+  #confirm { display: none; margin: 0 16px 10px; padding: 10px 12px; border-radius: 12px; background: var(--field); box-shadow: inset 0 0 0 1px rgba(245,165,36,.35); flex-direction: column; gap: 8px; }
+  #confirm.on { display: flex; }
+  #confirm .what { font-weight: 600; }
+  #confirm .row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  form { display: flex; gap: 6px; padding: 10px 12px 12px; border-top: 1px solid var(--line); flex: none; }
+  textarea { flex: 1; min-width: 0; resize: none; height: 40px; max-height: 140px; overflow-y: hidden; border: 1px solid transparent; border-radius: 10px; padding: 9px 11px; background: var(--field); color: var(--fg); font: inherit; outline: none; }
+  textarea:focus { border-color: rgba(47,122,255,.7); }
+  textarea::placeholder { color: #6f7682; }
+  textarea.full { overflow-y: auto; }
+  textarea::-webkit-scrollbar { width: 8px; }
+  textarea::-webkit-scrollbar-thumb { background: #2a2d34; border-radius: 4px; }
+  button:focus-visible { outline: 2px solid rgba(47,122,255,.8); outline-offset: 2px; }
+  .btn { border: 0; border-radius: 10px; padding: 0 14px; height: 40px; font: inherit; font-weight: 600; cursor: pointer; background: var(--buddy); color: #fff; }
+  .btn:hover { background: #4689ff; }
+  .btn.ghost { background: var(--field); color: var(--fg); font-weight: 500; }
+  .btn.ghost:hover { background: var(--field-hover); }
+  .btn.deny { background: var(--field); color: var(--danger); font-weight: 500; }
+  #confirm .btn { height: 32px; padding: 0 12px; }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none !important; } }
+</style>
+</head>
+<body data-state="idle">
+<header>
+  <span class="dot"></span>
+  <div class="titles"><div id="title">Task</div><div id="where"></div></div>
+  <button class="win" id="min" title="Tuck into the island (it keeps working)"><svg viewBox="0 0 12 12"><path d="M2 6.5 H10"/></svg></button>
+  <button class="win close" id="close" title="Close and stop this task"><svg viewBox="0 0 12 12"><path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5"/></svg></button>
+</header>
+<div id="log"></div>
+<div id="confirm">
+  <div>Can I do this? <span class="what" id="what"></span></div>
+  <div class="row">
+    <button class="btn" data-d="allow">Allow</button>
+    <button class="btn ghost" data-d="always">Allow for this task</button>
+    <button class="btn deny" data-d="deny">Don't</button>
+  </div>
+</div>
+<form id="form">
+  <textarea id="input" rows="1" spellcheck="false" placeholder="Give this task a job…"></textarea>
+  <button class="btn" id="send" type="submit">Ask</button>
+</form>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const log = $("log");
+  let busy = false;
+  let turn = null; // the in-progress answer, where steps collect
+
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+  const scrollDown = () => (log.scrollTop = log.scrollHeight);
+  const addUser = (text) => { log.append(el("div", "user", text)); scrollDown(); };
+  const addBuddy = (text) => { log.append(el("div", "buddy", text)); scrollDown(); };
+
+  function setBusy(on) {
+    busy = on;
+    $("send").textContent = on ? "Stop" : "Ask";
+    $("send").classList.toggle("ghost", on);
+    $("input").placeholder = on ? "Working… (you can keep using your computer)" : "Give this task a job…";
+  }
+
+  window.buddy.onTaskInit(({ n, title, target, transcript }) => {
+    $("title").textContent = title;
+    $("where").textContent = target ? `Started in ${target}` : "Started from the island";
+    for (const m of transcript) (m.role === "user" ? addUser : addBuddy)(m.text);
+    $("input").focus();
+  });
+
+  window.buddy.onTaskState(({ state, line, title }) => {
+    document.body.dataset.state = state;
+    if (title) $("title").textContent = title;
+    if (line && turn && state !== "confirm") {
+      const steps = turn.querySelector(".steps");
+      if (steps.lastChild?.textContent !== line) steps.append(el("span", null, line));
+      scrollDown();
+    }
+  });
+
+  window.buddy.onTaskConfirm(({ summary }) => {
+    $("what").textContent = summary;
+    $("confirm").classList.add("on");
+    $("confirm").querySelector(".btn").focus();
+  });
+  $("confirm").addEventListener("click", (e) => {
+    const d = e.target.dataset?.d;
+    if (!d) return;
+    $("confirm").classList.remove("on");
+    window.buddy.taskConfirmReply(d);
+  });
+
+  $("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (busy) return window.buddy.taskCancel();
+    const text = $("input").value.trim();
+    if (!text) return;
+    $("input").value = "";
+    $("input").style.height = "";
+    addUser(text);
+    turn = el("div", "turn");
+    turn.append(el("div", "steps"));
+    log.append(turn);
+    setBusy(true);
+    const { reply, title } = await window.buddy.taskAsk(text);
+    setBusy(false);
+    $("confirm").classList.remove("on");
+    if (title) $("title").textContent = title;
+    turn.classList.add("done");
+    if (reply) turn.append(el("div", "buddy", reply));
+    turn = null;
+    scrollDown();
+    $("input").focus();
+  });
+
+  // Enter sends, Shift+Enter breaks the line; the field grows with what you type.
+  $("input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("form").requestSubmit(); }
+  });
+  $("input").addEventListener("input", (e) => {
+    e.target.style.height = "";
+    e.target.style.height = Math.min(140, e.target.scrollHeight + 2) + "px";
+    e.target.classList.toggle("full", e.target.scrollHeight + 2 > 140);
+  });
+  addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (busy) window.buddy.taskCancel(); else window.buddy.taskMinimize();
+  });
+  $("min").addEventListener("click", () => window.buddy.taskMinimize());
+  $("close").addEventListener("click", () => window.buddy.taskClose());
+</script>
+</body>
+</html>

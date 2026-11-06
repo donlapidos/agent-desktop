@@ -1,0 +1,202 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+  @font-face { font-family: "Schibsted Grotesk"; src: url("fonts/schibsted-grotesk-var.woff2") format("woff2"); font-weight: 400 900; }
+  /* The bubble is the island opened up, so it wears the island's near-black in light and dark mode alike. */
+  :root {
+    --bg: #0c0d10; --fg: #eef0f3; --muted: #8b919c; --line: rgba(255,255,255,.07);
+    --buddy: #2f7aff; --buddy-ink: #fff; --field: #1a1c21; --field-hover: #23262d; --danger: #ff8a5c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; font: 14px/1.45 "Schibsted Grotesk", "Segoe UI", sans-serif; color: var(--fg); -webkit-font-smoothing: antialiased; }
+  .card { position: absolute; inset: 46px 6px 6px; display: flex; flex-direction: column; gap: 10px; padding: 12px 12px 12px 14px; border-radius: 18px; background: var(--bg); box-shadow: 0 14px 34px rgba(0,0,0,.34), inset 0 0 0 1px var(--line); overflow: hidden; }
+  /* The card slides out from under the island pill and unfolds, on the same curve the island uses when it
+     widens on hover, and folds back under it the same way. Folded, it is a pill parked exactly behind the
+     island's (the window starts at the island's top; the island window sits above this one). */
+  .card {
+    --ease: cubic-bezier(.2, .8, .2, 1);
+    transform: translateY(-40px);
+    clip-path: inset(0 25% calc(100% - 34px) 25% round 17px);
+    opacity: 0;
+    transition: clip-path .3s var(--ease), transform .3s var(--ease), opacity .1s linear .2s;
+  }
+  body.open .card {
+    transform: none;
+    clip-path: inset(-40px round 18px);
+    opacity: 1;
+    transition: clip-path .32s var(--ease), transform .32s var(--ease), opacity .06s linear;
+  }
+  /* Contents arrive once there's room for them and leave before the fold gets tight. */
+  .card > * { opacity: 0; transition: opacity .1s linear; }
+  body.open .card > * { opacity: 1; transition: opacity .18s linear .12s; }
+  @media (prefers-reduced-motion: reduce) { .card, body.open .card, .card > * { transition: none !important; } }
+  header { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--buddy); flex: none; }
+  header .dot.busy { animation: blink 1s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+  header .where { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  header button { border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; padding: 2px 4px; border-radius: 6px; }
+  header button:hover { color: var(--fg); background: var(--field); }
+  #reply { flex: 1; overflow-y: auto; white-space: pre-wrap; }
+  #reply:empty::before { content: "Ask me how to do something here, or ask me to do it for you."; color: var(--muted); }
+  #reply.status { color: var(--muted); }
+  #reply::-webkit-scrollbar { width: 8px; }
+  #reply::-webkit-scrollbar-thumb { background: #2a2d34; border-radius: 4px; }
+  #marks.on + #reply:empty::before { content: none; }
+  form { display: flex; gap: 6px; }
+  input { flex: 1; min-width: 0; border: 1px solid transparent; border-radius: 10px; padding: 9px 11px; background: var(--field); color: var(--fg); font: inherit; outline: none; }
+  input:focus { border-color: rgba(47, 122, 255, .7); }
+  input::placeholder { color: #6f7682; }
+  .btn { border: 0; border-radius: 10px; padding: 8px 12px; font: inherit; font-weight: 600; cursor: pointer; background: var(--buddy); color: var(--buddy-ink); }
+  .btn:hover { background: #4689ff; }
+  .btn.ghost { background: var(--field); color: var(--fg); font-weight: 500; }
+  .btn.ghost:hover, .btn.deny:hover { background: var(--field-hover); }
+  .btn.deny { background: var(--field); color: var(--danger); font-weight: 500; }
+  #confirm { display: none; flex-direction: column; gap: 8px; padding: 10px; border-radius: 12px; background: var(--field); }
+  #confirm.on { display: flex; }
+  #confirm .what { font-weight: 600; }
+  #confirm .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  #marks { display: none; flex-wrap: wrap; gap: 6px; align-items: center; }
+  #marks.on { display: flex; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 9px 3px 3px; border-radius: 999px; background: rgba(47, 122, 255, 0.16); color: #dbe6ff; font-size: 12.5px; }
+  .chip b { display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; background: #1f5fd6; color: #fff; font-size: 11px; flex: none; }
+  .chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #marks .btn { padding: 4px 10px; font-size: 12.5px; }
+  kbd { font: 500 11px "Schibsted Grotesk", sans-serif; padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="card">
+  <header>
+    <span class="dot" id="dot"></span>
+    <span class="where" id="where">Buddy</span>
+    <button id="totask" title="Move this conversation into its own task window. It keeps working there, and the bubble is free again.">Make task</button>
+    <button id="new" title="Start a new conversation">New</button>
+    <button id="stop" title="Stop (Esc)" hidden>Stop</button>
+  </header>
+  <div id="marks"></div>
+  <div id="reply"></div>
+  <div id="confirm">
+    <div>Can I do this? <span class="what" id="what"></span></div>
+    <div class="row">
+      <button class="btn" data-d="allow">Allow</button>
+      <button class="btn ghost" data-d="always">Allow for this task</button>
+      <button class="btn deny" data-d="deny">Don't</button>
+    </div>
+  </div>
+  <form id="form">
+    <input id="input" autocomplete="off" spellcheck="false" placeholder="How do I…?  or  Do it for me">
+    <button class="btn" type="submit">Ask</button>
+  </form>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let needsKey = false, busy = false;
+
+  function setBusy(on) {
+    busy = on;
+    $("dot").classList.toggle("busy", on);
+    $("stop").hidden = !on;
+    $("input").disabled = on;
+  }
+
+  function show(text, status = false) {
+    $("reply").textContent = text;
+    $("reply").classList.toggle("status", status);
+  }
+
+  window.buddy.onSummon(({ target, needsKey: nk }) => {
+    needsKey = nk;
+    $("marks").classList.remove("on");
+    $("where").textContent = nk ? "Welcome to Buddy" : target ? `Looking at ${target}` : "Buddy";
+    $("input").type = nk ? "password" : "text";
+    $("input").placeholder = nk ? "Paste your Anthropic API key (sk-ant-…)" : "How do I…?  or  Do it for me";
+    if (nk) show("I need an Anthropic API key to think. It's stored encrypted on this PC.");
+    if (!busy) { $("input").disabled = false; $("input").value = ""; $("input").focus(); }
+  });
+
+  // Wait a frame so the window has painted the folded pill before it unfolds.
+  window.buddy.onBubbleOpen(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.body.classList.add("open");
+    if (!$("input").disabled) $("input").focus();
+  })));
+  window.buddy.onBubbleClose(() => document.body.classList.remove("open"));
+
+  window.buddy.onStatus((text) => show(text, true));
+
+  // What the user highlighted: numbered chips matching the marker numbers on screen.
+  window.buddy.onMarks((list) => {
+    const box = $("marks");
+    box.replaceChildren();
+    for (const m of list) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      const n = document.createElement("b");
+      n.textContent = m.n;
+      const label = document.createElement("span");
+      label.textContent = m.label;
+      chip.append(n, label);
+      box.append(chip);
+    }
+    const explain = document.createElement("button");
+    explain.className = "btn ghost";
+    explain.type = "button";
+    explain.textContent = list.length > 1 ? "Explain these" : "Explain this";
+    explain.addEventListener("click", () => { $("input").value = "Explain what I highlighted."; $("form").requestSubmit(); });
+    box.append(explain);
+    box.classList.add("on");
+    $("where").textContent = `${list.length} marked`;
+    $("input").placeholder = list.length > 1 ? "Ask about these marks… (e.g. compare 1 and 2)" : "Ask about what you marked…";
+    show("");
+  });
+  window.buddy.onReply((text) => { show(text); $("where").textContent = "Buddy"; });
+
+  window.buddy.onConfirm(({ summary }) => {
+    $("what").textContent = summary;
+    $("confirm").classList.add("on");
+    $("confirm").querySelector(".btn").focus();
+  });
+
+  $("confirm").addEventListener("pointerdown", (e) => console.log("TRACE press on approval: " + (e.target.dataset?.d || e.target.tagName) + " open=" + document.body.classList.contains("open")));
+  $("confirm").addEventListener("click", (e) => {
+    const d = e.target.dataset?.d;
+    if (!d) return;
+    $("confirm").classList.remove("on");
+    window.buddy.confirmReply(d);
+  });
+
+  $("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = $("input").value.trim();
+    if (!text || busy) return;
+    $("input").value = "";
+    if (needsKey) {
+      const { ok } = await window.buddy.setKey(text);
+      needsKey = !ok;
+      $("input").type = "text";
+      $("input").placeholder = "How do I…?  or  Do it for me";
+      $("where").textContent = "Buddy";
+      show(ok ? "Got it. Ask me anything about what's on your screen." : "That didn't work. Try again.");
+      return;
+    }
+    setBusy(true);
+    show("Thinking…", true);
+    const { reply } = await window.buddy.ask(text);
+    setBusy(false);
+    show(reply);
+    $("confirm").classList.remove("on");
+  });
+
+  $("stop").addEventListener("click", () => window.buddy.cancel());
+  $("totask").addEventListener("click", () => window.buddy.newTask());
+  $("new").addEventListener("click", () => { window.buddy.reset(); show(""); $("input").focus(); });
+  addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (busy) window.buddy.cancel(); else window.buddy.hide();
+  });
+</script>
+</body>
+</html>
