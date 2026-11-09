@@ -14,6 +14,12 @@
   const NO_SPEECH_MS = 7000;
   const MAX_MS = 30000;
   const PRE_ROLL_MS = 300;
+  // Dictation that keeps going: each pause sends what was said so far to be typed, and the mic stays open until the
+  // key is pressed again, a minute passes with nothing said, or ten minutes in all. A run of speech with no pause is
+  // cut at 25 s so no piece is too long to transcribe well.
+  const CONTINUOUS_IDLE_MS = 60_000;
+  const CONTINUOUS_MAX_MS = 10 * 60_000;
+  const SEGMENT_MAX_MS = 25_000;
 
   let take = null; // the request being recorded
 
@@ -35,9 +41,9 @@
     return out;
   }
 
-  async function listen() {
+  async function listen({ continuous = false } = {}) {
     if (take) return;
-    const t = { chunks: [], frame: [], frameLen: 0, speech: false, lastVoice: 0, started: performance.now(), floor: null, loud: 0 };
+    const t = { chunks: [], frame: [], frameLen: 0, speech: false, lastVoice: 0, started: performance.now(), opened: performance.now(), segmentStart: 0, segments: 0, continuous, floor: null, loud: 0 };
     take = t;
     try {
       t.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -72,7 +78,10 @@
     const threshold = Math.max(0.012, t.floor * 3);
     window.buddy.voiceLevel(Math.min(1, rms / 0.12));
     if (rms > threshold) {
-      if (++t.loud >= 2 && !t.speech) t.speech = true;
+      if (++t.loud >= 2 && !t.speech) {
+        t.speech = true;
+        t.segmentStart = now;
+      }
       t.lastVoice = now;
     } else t.loud = 0;
     // Keep only a short pre-roll until speech starts.
@@ -80,9 +89,25 @@
       const keep = Math.ceil((t.ctx.sampleRate * PRE_ROLL_MS) / 1000 / 1536) + 1;
       if (t.chunks.length > keep) t.chunks.splice(0, t.chunks.length - keep);
     }
+    if (t.continuous) {
+      if (t.speech && (now - t.lastVoice > END_SILENCE_MS || now - t.segmentStart > SEGMENT_MAX_MS)) segment(t, now);
+      else if (!t.speech && now - t.started > CONTINUOUS_IDLE_MS) finish();
+      else if (now - t.opened > CONTINUOUS_MAX_MS) finish();
+      return;
+    }
     if (t.speech && now - t.lastVoice > END_SILENCE_MS) finish();
     else if (!t.speech && now - t.started > NO_SPEECH_MS) finish();
     else if (now - t.started > MAX_MS) finish();
+  }
+
+  // Sends what was said since the last pause and keeps listening.
+  function segment(t, now) {
+    window.buddy.voiceSegment({ pcm: downsample(t.chunks, t.ctx.sampleRate) });
+    t.chunks = [];
+    t.speech = false;
+    t.loud = 0;
+    t.started = now;
+    t.segments++;
   }
 
   function close(t) {
@@ -95,7 +120,7 @@
     if (!t) return;
     take = null;
     close(t);
-    if (!t.speech || !t.ctx) return window.buddy.voiceHeard({ error: "silence" });
+    if (!t.speech || !t.ctx) return window.buddy.voiceHeard(t.segments ? { done: true } : { error: "silence" });
     window.buddy.voiceHeard({ pcm: downsample(t.chunks, t.ctx.sampleRate) });
   }
 
@@ -130,7 +155,7 @@
   }
 
   window.buddy.onVoice(({ cmd, ...rest }) => {
-    if (cmd === "listen") listen();
+    if (cmd === "listen") listen(rest);
     else if (cmd === "finish") finish();
     else if (cmd === "cancel") cancel();
     else if (cmd === "play") play(rest);

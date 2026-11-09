@@ -5,13 +5,13 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
   @font-face { font-family: "Schibsted Grotesk"; src: url("fonts/schibsted-grotesk-var.woff2") format("woff2"); font-weight: 400 900; }
-  :root { --buddy: #2f7aff; --glow: rgba(47, 122, 255, 0.35); }
+  :root { --buddy: #2f7aff; --glow: color-mix(in srgb, var(--buddy) 35%, transparent); }
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font-family: "Schibsted Grotesk", "Segoe UI", sans-serif; }
   #buddy { position: absolute; left: 0; top: 0; width: 22px; height: 22px; will-change: transform; opacity: 0; transition: opacity .25s; }
   #buddy svg { filter: drop-shadow(0 0 6px var(--glow)) drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
   #ring { position: absolute; border: 2px solid var(--buddy); border-radius: 8px; box-shadow: 0 0 0 4px var(--glow); opacity: 0; transition: opacity .2s; pointer-events: none; }
   #ring.on { opacity: 1; animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 50% { box-shadow: 0 0 0 9px rgba(47, 122, 255, 0.12); } }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 9px color-mix(in srgb, var(--buddy) 12%, transparent); } }
   #caption { position: absolute; max-width: 260px; padding: 7px 11px; border-radius: 12px; background: var(--buddy); color: #fff; font-size: 13.5px; line-height: 1.3; box-shadow: 0 6px 20px rgba(0,0,0,.25); opacity: 0; transform: translateY(4px); transition: opacity .2s, transform .2s; }
   #caption.on { opacity: 1; transform: none; }
   @media (prefers-reduced-motion: reduce) { #ring.on { animation: none; } }
@@ -19,15 +19,15 @@
 
   /* Marker: translucent highlighter strokes, each numbered at its start. */
   #ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-  #ink .stroke { fill: none; stroke: rgba(47, 122, 255, 0.36); stroke-width: 18; stroke-linecap: round; stroke-linejoin: round; }
-  #ink .disc { fill: #1f5fd6; stroke: #fff; stroke-width: 2; }
+  #ink .stroke { fill: none; stroke: color-mix(in srgb, var(--buddy) 36%, transparent); stroke-width: 18; stroke-linecap: round; stroke-linejoin: round; }
+  #ink .disc { fill: color-mix(in srgb, var(--buddy) 78%, black); stroke: #fff; stroke-width: 2; }
   #ink .n { fill: #fff; font: 700 13px "Schibsted Grotesk", "Segoe UI", sans-serif; text-anchor: middle; }
 </style>
 </head>
 <body>
 <div id="ring"></div>
 <div id="buddy">
-  <svg width="22" height="22" viewBox="0 0 22 22"><path d="M3 2 L19 10 L11.5 12 L8.5 19.5 Z" fill="#2f7aff" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  <svg width="22" height="22" viewBox="0 0 22 22"><path d="M3 2 L19 10 L11.5 12 L8.5 19.5 Z" style="fill: var(--buddy)" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
 </div>
 <div id="caption"></div>
 <svg id="ink" aria-hidden="true"></svg>

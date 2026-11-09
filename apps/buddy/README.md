@@ -37,7 +37,7 @@ top of the screen.
   nothing leaves the machine. The models load when you start talking and unload after 10 idle minutes (about 520 MB
   while loaded). Measured on a Core Ultra 5 laptop on battery: about 0.4 s to understand a sentence and 1.6 s before
   Buddy starts speaking a short one.
-  **Talk back** in the tray chooses when Buddy speaks: when you spoke (default), always, or never.
+  **Talk back** in Settings chooses when Buddy speaks: when you spoke (default), always, or never.
 - **Task windows:** hover the island and click **Task** (or **Make task** in the bubble to move the current
   conversation) to give a job its own agent and window. Tasks work side by side while you keep using your computer;
   each shows the steps it takes and asks for approval in its own window. **–** tucks a task into a numbered chip on
@@ -45,6 +45,17 @@ top of the screen.
   window with its latest line, and answer an approval (**Allow** / **Don't**) right there; click the chip or the
   preview to bring the window back. **×** closes the task and stops its agent. Anything that clicks or types takes
   turns, so two tasks never fight over the mouse. Up to six at once; tasks don't survive a restart.
+- **Dictation:** press **Ctrl+Alt+D** in any app and talk; Buddy types what you say where your cursor is (through
+  the clipboard and one paste, then puts back what you had copied). It stops when you pause, or, if you choose, keeps
+  going through pauses until you press the key again. It runs on this PC and needs no API key.
+- **Any language:** set listening to **Detect automatically** and Buddy understands about 99 languages (multilingual
+  Whisper, a 160 MB download the first time) and answers, out loud too, in the language you spoke.
+- **Agents tab:** choose how much Buddy's agents (tasks, routines, "do it for me") may do without asking: nothing, safe
+  moves (scrolling, expanding, moving windows), or anything in apps you trust. Apps on the **Never act in** list
+  (password managers to start with) are off limits even if you'd approve. This is enforced where actions get their
+  permission slip (`src/policy.js`, `src/approvals.js`), not just in the prompt.
+- **Routines:** tasks on a schedule ("weekdays at 9:00, summarise my unread email"), each in its own task window tucked
+  into the island, under the Agents rules. A run missed by less than six hours (the PC was asleep) still happens once.
 - **Word documents:** ask for a report, summary or memo "in Word" and Buddy writes a real `.docx` (title, headings,
   lists, tables, bold and italic), saves it in **Documents › Buddy** without overwriting anything, and opens it in
   Word. One approval, no typing into Word.
@@ -96,7 +107,28 @@ holds three rules in place:
 - **Coordinates.** agent-desktop works in physical pixels and Electron in DIPs; `geometry.js` gives each its own
   type, and `main.js` converts between them only through `toPhysicalPoint`, `toPhysicalRect` and `toDipRect`.
 
+## Settings
+
+Open **Settings** from the tray, the sliders icon on the island, or the bubble. Every change applies at once, and
+**Request a feature** in its sidebar opens a pre-filled GitHub issue for you to edit and send.
+
+- **Voice & speech:** pick one of ten voices (choosing one plays it), speaking speed, and talk back.
+- **Dictation:** when to stop (at a pause, or when you press the key again) and the listening language (English, or
+  detect automatically).
+- **Agents** and **Routines:** see above.
+- **Look:** Buddy's accent colour (pointer, island, chat, task windows and marks) and light or dark explainer plates.
+- **Shortcuts:** click one and press new keys. A shortcut another app already owns, or another Buddy action uses, is
+  refused with the reason; while you record one, Buddy lets go of its own so pressing them is recorded.
+- **Claude & privacy:** your API key (saved encrypted; the page only learns whether one is saved), model (Opus,
+  Sonnet or Haiku 5.5) and thinking effort for new conversations, start with Windows, and clearing saved explainers
+  or the activity log.
+
+Settings live in `%APPDATA%/desktop-buddy/settings.json`. Every value is checked when it is read and written, and the
+file is replaced in one step; a damaged file is set aside as `settings.json.bad` and Buddy carries on with defaults.
+
 ## Configuration
+
+These environment variables override Settings (useful for development):
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -104,6 +136,7 @@ holds three rules in place:
 | `BUDDY_EXPLAIN_HOTKEY` | `Control+Alt+E` | Explain what's under the cursor |
 | `BUDDY_MARK_HOTKEY` | `Control+Alt+M` | Highlight things to ask about |
 | `BUDDY_TALK_HOTKEY` | `Control+Alt+T` | Talk to Buddy (not Ctrl+Alt+V, which is Paste Special in Office) |
+| `BUDDY_DICTATE_HOTKEY` | `Control+Alt+D` | Dictate into the app you're in |
 | `BUDDY_VOICE` | `0` | Supertonic voice, `0`–`9` |
 | `BUDDY_GPU` | unset | `1` turns GPU acceleration back on. It's off by default because on some dual-GPU laptops the GPU compositor leaves Buddy's transparent windows (the island, the pointer) blank |
 | `BUDDY_MODEL` | `claude-opus-5-5` | Claude model |

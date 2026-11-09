@@ -9,18 +9,19 @@
      Opaque is the point: a full-screen transparent window repaints slowly on Windows, which made drawing lag. */
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; user-select: none; font-family: "Schibsted Grotesk", "Segoe UI", sans-serif; }
   #shot { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
-  #ink { position: fixed; inset: 0; width: 100vw; height: 100vh; touch-action: none;
-    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='12' r='9' fill='rgba(47,122,255,0.35)' stroke='%231f5fd6' stroke-width='1.5'/%3E%3Ccircle cx='12' cy='12' r='1.5' fill='%231f5fd6'/%3E%3C/svg%3E") 12 12, crosshair; }
+  :root { --buddy: #2f7aff; }
+  /* The pen cursor is drawn in the accent colour by the script below (an image can't read a CSS variable). */
+  #ink { position: fixed; inset: 0; width: 100vw; height: 100vh; touch-action: none; cursor: crosshair; }
   /* A thin frame says "this is a still, you're marking" without dimming what you're marking. */
-  #frame { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 3px rgba(47, 122, 255, .85); }
+  #frame { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--buddy) 85%, transparent); }
   #bar { position: fixed; left: 50%; top: 52px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px;
     padding: 6px 6px 6px 14px; border-radius: 14px; background: #0c0d10; color: #f2f3f5; font-size: 13px;
     box-shadow: 0 8px 26px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.06); }
   #count { padding-right: 6px; color: #d9dce2; white-space: nowrap; }
   button { border: 0; border-radius: 9px; height: 28px; padding: 0 11px; font: 600 12px "Schibsted Grotesk", "Segoe UI", sans-serif; cursor: pointer; background: #23262d; color: #f2f3f5; display: inline-flex; align-items: center; gap: 6px; }
   button:hover:not(:disabled) { background: #30343d; }
-  button.primary { background: #2f7aff; }
-  button.primary:hover:not(:disabled) { background: #4689ff; }
+  button.primary { background: var(--buddy); }
+  button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--buddy) 82%, white); }
   button:disabled { opacity: .4; cursor: default; }
   kbd { font: 10.5px "Schibsted Grotesk", sans-serif; opacity: .7; }
   body.done #bar, body.done #frame { display: none; }
@@ -59,22 +60,36 @@
     return d + ` L${last.x} ${last.y}`;
   }
 
+  // The accent comes from --buddy (chosen in Settings). The canvas and the cursor image need plain colours, so it is
+  // read and mixed here.
+  function accent() {
+    const hex = getComputedStyle(document.documentElement).getPropertyValue("--buddy").trim();
+    const n = /^#[0-9a-f]{6}$/i.test(hex) ? parseInt(hex.slice(1), 16) : 0x2f7aff;
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const tint = (alpha) => `rgba(${accent().join(", ")}, ${alpha})`;
+  const deep = () => `rgb(${accent().map((v) => Math.round(v * 0.78)).join(", ")})`;
+  function penCursor() {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="9" fill="${tint(0.35)}" stroke="${deep()}" stroke-width="1.5"/><circle cx="12" cy="12" r="1.5" fill="${deep()}"/></svg>`;
+    canvas.style.cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 12 12, crosshair`;
+  }
+
   function paint(c, list, liveStroke) {
     c.lineCap = c.lineJoin = "round";
     c.lineWidth = PEN;
     for (const s of list) {
-      c.strokeStyle = "rgba(47, 122, 255, 0.36)";
+      c.strokeStyle = tint(0.36);
       c.stroke(new Path2D(pathOf(s.points)));
     }
     if (liveStroke) {
-      c.strokeStyle = "rgba(47, 122, 255, 0.5)";
+      c.strokeStyle = tint(0.5);
       c.stroke(new Path2D(pathOf(liveStroke.points)));
     }
     for (const s of list) {
       const { x, y } = s.points[0];
       c.beginPath();
       c.arc(x - 14, y - 14, 11, 0, Math.PI * 2);
-      c.fillStyle = "#1f5fd6";
+      c.fillStyle = deep();
       c.fill();
       c.lineWidth = 2;
       c.strokeStyle = "#fff";
@@ -205,7 +220,7 @@
   addEventListener("contextmenu", (e) => { e.preventDefault(); undo(); });
 
   window.buddy.onMarkStart(({ png }) => {
-    shot.onload = () => { fit(); window.buddy.markReady(); };
+    shot.onload = () => { fit(); penCursor(); window.buddy.markReady(); };
     shot.src = URL.createObjectURL(new Blob([png], { type: "image/png" }));
   });
   window.buddy.onMarkCommand((cmd) => (cmd === "done" ? finish() : cmd === "undo" ? undo() : null));

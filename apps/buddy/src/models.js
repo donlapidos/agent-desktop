@@ -42,6 +42,26 @@ export const TTS = {
   ],
 };
 
+/**
+ * Listening in any language: multilingual Whisper base (OpenAI, MIT), which detects the language and transcribes it in
+ * one pass. Downloaded only when "Detect automatically" is chosen in Settings. The mirror has no licence file.
+ * @type {Model}
+ */
+export const ASR_MULTI = {
+  id: "sherpa-onnx-whisper-base",
+  repo: "csukuangfj/sherpa-onnx-whisper-base",
+  commit: "bb53ee204431c90d314c1cc08d28d23e5b7927cc",
+  license: "MIT",
+  files: [
+    { name: "base-encoder.int8.onnx", size: 29120534, sha256: "0b8fb1304b6109976038efff5ace81720e00386f3ff6b54ee8c75291ca0a1e11" },
+    { name: "base-decoder.int8.onnx", size: 130672026, sha256: "9759d217388a01b3a4c7c15533201067b48ae819c4daafc8624e64b9409dc02d" },
+    { name: "base-tokens.txt", size: 816730, sha256: "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126" },
+  ],
+};
+
+/** Languages Supertonic 3 can speak (two-letter codes). Anything else is spoken with the English voice. */
+export const VOICE_LANGUAGES = Object.freeze(new Set(["ar", "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi"]));
+
 // Caches earlier versions of Buddy left behind (Whisper and Kokoro, about 660 MB). Only this folder, inside Buddy's
 // own models directory, is ever removed.
 const LEGACY_DIRS = ["onnx-community"];

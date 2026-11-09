@@ -4,11 +4,9 @@
 import { BrowserWindow, ipcMain } from "electron";
 import { fork } from "node:child_process";
 import path from "node:path";
-import { ASR, TTS, isInstalled, removeLegacy } from "./models.js";
+import { ASR, ASR_MULTI, TTS, isInstalled, removeLegacy } from "./models.js";
 import { pieces } from "./speakable.js";
 
-// Supertonic has ten voices, 0-9. 0 was chosen by ear.
-const VOICE = Math.min(9, Math.max(0, Math.trunc(Number(process.env.BUDDY_VOICE ?? 0)) || 0));
 // The models hold ~520 MB while loaded. They load the moment the user starts talking (Moonshine is ready before
 // they finish their sentence, Supertonic before Claude answers) and unload after this long unused.
 const UNLOAD_AFTER_MS = 10 * 60_000;
@@ -18,10 +16,13 @@ const DEADLINE_MS = { init: 15_000, warm: 30 * 60_000, transcribe: 60_000, speak
 const PLAY_GRACE_MS = 5_000;
 
 /**
- * @param {{ here: string, cacheDir: string, onState: (state: string, info?: object) => void,
- *           onLevel: (level: number) => void, trace?: Function }} opts
+ * `getVoice` says which voice and pace to speak in, and `getLanguage` which language to listen for ("en" or "auto");
+ * both come from Settings and are asked every time.
+ * @param {{ here: string, cacheDir: string, getVoice: () => { sid: number, speed: number, lang?: string },
+ *           getLanguage: () => string,
+ *           onState: (state: string, info?: object) => void, onLevel: (level: number) => void, trace?: Function }} opts
  */
-export function createVoice({ here, cacheDir, onState, onLevel, trace = () => {} }) {
+export function createVoice({ here, cacheDir, getVoice, getLanguage, onState, onLevel, trace = () => {} }) {
   let speech = null;
   let unloadTimer = null;
   let seq = 0;
@@ -51,7 +52,7 @@ export function createVoice({ here, cacheDir, onState, onLevel, trace = () => {}
     proc.on("exit", () => {
       if (speech === proc) fail("The speech engine stopped");
     });
-    request("init", { cacheDir, voice: VOICE });
+    request("init", { cacheDir });
   }
 
   // Ends every waiting request with `reason` and drops the engine; the next request starts a fresh one.
@@ -116,17 +117,35 @@ export function createVoice({ here, cacheDir, onState, onLevel, trace = () => {}
     heard = null;
     done?.(result);
   });
+  let onSegment = null; // where the pieces of a continuous dictation go
+  ipcMain.on("voice-segment", (e, result) => {
+    if (fromVoice(e) && result?.pcm) onSegment?.(result.pcm);
+  });
   ipcMain.on("voice-played", (e, id) => {
     if (!fromVoice(e)) return;
     played.get(id)?.();
     played.delete(id);
   });
 
-  /** Records until the user stops talking, then transcribes. Resolves { text } or { error }. */
+  // Transcribes 16 kHz audio in the listening language from Settings. Resolves { text, lang } or { error }; `lang` is
+  // the language heard (a two-letter code), which is always "en" unless detection is on.
+  async function hear(pcm) {
+    const t0 = Date.now();
+    try {
+      const { text, lang } = await request("transcribe", { pcm, language: getLanguage() });
+      trace({ kind: "voice-heard", ms: Date.now() - t0, seconds: +(pcm.length / 16000).toFixed(1), lang });
+      // Recognizers can fill silence with tags like "[BLANK_AUDIO]" or "(wind blowing)"; drop them.
+      const clean = text.replace(/\[[^\]]*\]|\([^)]*\)/g, "").trim();
+      return clean.replace(/[.\s]/g, "") ? { text: clean, lang: lang || "en" } : { error: "silence" };
+    } catch (err) {
+      return { error: err.message };
+    }
+  }
+
+  /** Records until the user stops talking, then transcribes. Resolves { text, lang } or { error }. */
   async function listen() {
     hush();
     if (heard) return { error: "busy" };
-    const started = Date.now();
     warm();
     const result = await new Promise((resolve) => {
       heard = resolve;
@@ -134,16 +153,41 @@ export function createVoice({ here, cacheDir, onState, onLevel, trace = () => {}
     });
     if (!result?.pcm) return { error: result?.error ?? "cancelled" };
     onState("transcribing");
-    const t0 = Date.now();
-    try {
-      const { text } = await request("transcribe", { pcm: result.pcm });
-      trace({ kind: "voice-heard", ms: Date.now() - t0, seconds: +(result.pcm.length / 16000).toFixed(1), total: Date.now() - started });
-      // Recognizers can fill silence with tags like "[BLANK_AUDIO]" or "(wind blowing)"; drop them.
-      const clean = text.replace(/\[[^\]]*\]|\([^)]*\)/g, "").trim();
-      return clean.replace(/[.\s]/g, "") ? { text: clean } : { error: "silence" };
-    } catch (err) {
-      return { error: err.message };
-    }
+    return hear(result.pcm);
+  }
+
+  /**
+   * Dictation: hands each piece of what the user says to `onText`, in order, as soon as it is transcribed. With
+   * `continuous` it keeps listening through pauses until finishListening(); otherwise it stops at the first pause.
+   * Resolves { pieces } (how many were typed) or { error }.
+   * @param {{ continuous: boolean, onText: (text: string) => Promise<void> }} how
+   */
+  async function dictate({ continuous, onText }) {
+    hush();
+    if (heard) return { error: "busy" };
+    warm();
+    let chain = Promise.resolve();
+    let count = 0;
+    let lastError = null;
+    const handle = (pcm) => {
+      chain = chain.then(async () => {
+        const r = await hear(pcm);
+        if (r.text) {
+          count++;
+          await onText(r.text);
+        } else if (r.error !== "silence") lastError = r.error;
+      });
+    };
+    onSegment = handle;
+    const result = await new Promise((resolve) => {
+      heard = resolve;
+      send({ cmd: "listen", continuous });
+    });
+    onSegment = null;
+    if (result?.pcm) handle(result.pcm);
+    await chain;
+    if (count) return { pieces: count };
+    return { error: lastError ?? (result?.error === "cancelled" ? "cancelled" : result?.error && !result?.done ? result.error : "silence") };
   }
 
   /** Ends listening now and uses what was said so far. */
@@ -156,17 +200,17 @@ export function createVoice({ here, cacheDir, onState, onLevel, trace = () => {}
     done({ error: "cancelled" });
   };
 
-  const warm = () => request("warm").catch((err) => trace({ kind: "voice-warm-failed", error: err.message }));
+  const warm = () => request("warm", { language: getLanguage() }).catch((err) => trace({ kind: "voice-warm-failed", error: err.message }));
 
   /** Speaks text, a piece at a time, cutting off whatever Buddy was saying. Resolves when done or hushed. */
-  async function say(text) {
+  async function say(text, how = getVoice()) {
     const parts = pieces(text);
     if (!parts.length) return;
     hush();
     const mine = ++gen;
     speaking = true;
     onState("speaking");
-    const synth = (s) => request("speak", { text: s }).catch(() => null);
+    const synth = (s) => request("speak", { text: s, ...how }).catch(() => null);
     try {
       let next = synth(parts[0]);
       for (let i = 0; i < parts.length; i++) {
@@ -212,6 +256,7 @@ export function createVoice({ here, cacheDir, onState, onLevel, trace = () => {}
 
   return {
     listen,
+    dictate,
     finishListening,
     cancelListening,
     say,
@@ -220,19 +265,20 @@ export function createVoice({ here, cacheDir, onState, onLevel, trace = () => {}
     // On a first run, fetch the models in the background so the first question isn't a long wait. Caches of the
     // speech models earlier versions used are removed once the current ones are in place.
     prepare: async () => {
-      if (![ASR, TTS].every((m) => isInstalled(cacheDir, m))) await warm();
-      if ([ASR, TTS].every((m) => isInstalled(cacheDir, m))) {
+      const needed = [getLanguage() === "auto" ? ASR_MULTI : ASR, TTS];
+      if (!needed.every((m) => isInstalled(cacheDir, m))) await warm();
+      if (needed.every((m) => isInstalled(cacheDir, m))) {
         const removed = removeLegacy(cacheDir);
         if (removed.length) trace({ kind: "voice-legacy-removed", removed });
       }
     },
-    synthesize: (text) => request("speak", { text }),
+    synthesize: (text, how = {}) => request("speak", { text, ...getVoice(), ...how }),
     // Dev checks play replies silently.
     mute: () => {
       if (!win || win.isDestroyed()) createWindow();
       win.webContents.setAudioMuted(true);
     },
-    transcribe: (pcm) => request("transcribe", { pcm }),
+    transcribe: (pcm, language = getLanguage()) => request("transcribe", { pcm, language }),
     get listening() {
       return !!heard;
     },

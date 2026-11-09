@@ -29,6 +29,11 @@ Buddy doesn't ship these. It downloads them on first use from the pinned Hugging
 By Useful Sensors / Moonshine AI. Code and English models under the **MIT License**.
 Model: <https://github.com/moonshine-ai/moonshine>. ONNX export by the sherpa-onnx project.
 
+### Whisper base (multilingual), for listening in any language
+
+By OpenAI, under the **MIT License**: <https://github.com/openai/whisper>. ONNX (int8) export by the sherpa-onnx
+project. Downloaded only when listening is set to "Detect automatically".
+
 ### Supertonic 3, for speaking
 
 By Supertone Inc. Sample code under the **MIT License**. The model weights are released under the

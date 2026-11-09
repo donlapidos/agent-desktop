@@ -1,11 +1,29 @@
 // The agent loop. Claude decides; agent-desktop observes and acts; the UI points and confirms.
 import Anthropic from "@anthropic-ai/sdk";
 import { askUser, requestApproval } from "./approvals.js";
+import { decide } from "./policy.js";
 import { observe, perform, renderReading, renderTree, snapshotResilient, waitForText } from "./desktop.js";
 import { writeDocx } from "./documents.js";
 
-const MODEL = process.env.BUDDY_MODEL ?? "claude-opus-5-5";
-const EFFORT = /** @type {"low" | "medium" | "high" | "xhigh" | "max"} */ (process.env.BUDDY_EFFORT ?? "medium");
+/** @typedef {"low" | "medium" | "high" | "xhigh" | "max"} Effort */
+
+// The model and effort new conversations start with, from Settings (BUDDY_MODEL and BUDDY_EFFORT override). A
+// conversation keeps the pair it started with: thinking is tied to the model that produced it, so switching models
+// mid-conversation could fail.
+let startWith = { model: "claude-opus-5-5", effort: /** @type {Effort} */ ("medium") };
+
+/** @param {{ model: string, effort: string }} chosen */
+/** @type {import("./policy.js").AgentPolicy | null} */
+let agentPolicy = null;
+
+/** The Agents settings every Brain acts under (Settings › Agents). Without them, every action is asked about. */
+export function setAgentPolicy(/** @type {import("./policy.js").AgentPolicy | null} */ policy) {
+  agentPolicy = policy ? { rope: policy.rope, trustedApps: [...policy.trustedApps], blockedApps: [...policy.blockedApps] } : null;
+}
+
+export function setBrainDefaults({ model, effort }) {
+  startWith = { model: process.env.BUDDY_MODEL ?? model, effort: /** @type {Effort} */ (process.env.BUDDY_EFFORT ?? effort) };
+}
 const MAX_STEPS = 30;
 
 const SYSTEM = `You are Buddy, a friendly assistant that lives next to the user's cursor on their Windows desktop.
@@ -324,9 +342,15 @@ const TOOLS = [
 
 // Several task agents can run at once, but there is one mouse and one keyboard: actions take turns.
 // Approval happens before a task joins the queue, so a task waiting on the user never blocks the others.
+/** @type {Promise<unknown>} */
 let inputTurn = Promise.resolve();
-function takeTurn(fn) {
-  const turn = inputTurn.then(fn, fn);
+/**
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+export function takeTurn(fn) {
+  const turn = /** @type {Promise<T>} */ (inputTurn.then(fn, fn));
   inputTurn = turn.catch(() => {});
   return turn;
 }
@@ -401,6 +425,17 @@ function trimBlock(b) {
 const SPOKEN =
   "\n\n(They said this out loud; it was transcribed by speech recognition, so allow for misheard words. Your reply and your point_at captions will be read aloud: answer in short, natural spoken sentences, lead with the answer, and skip Markdown, tables and long lists. Anything they need to read or copy belongs in a document or an explainer.)";
 
+const languageName = (code) => {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+};
+// The note for a spoken question, telling Claude which language to answer in when it wasn't English.
+const spokenNote = (lang) =>
+  !lang || lang === "en" ? SPOKEN : `${SPOKEN}\n(They spoke ${languageName(lang)}. Answer in ${languageName(lang)}, captions included.)`;
+
 /**
  * What a Brain needs from the window it answers in (the bubble, or a task window).
  * @typedef {{
@@ -432,6 +467,9 @@ export class Brain {
     /** @type {Map<string, import("./geometry.js").PhysicalRect>} ref -> where agent-desktop says it is */
     this.bounds = new Map();
     this.labels = new Map(); // ref -> plain element name, for approval cards
+    this.refApps = new Map(); // ref -> the app its window belongs to, for the Agents policy
+    this.model = startWith.model;
+    this.effort = startWith.effort;
     /** @type {Map<number, import("./geometry.js").PhysicalRect>} mark number -> its box */
     this.marks = new Map();
     // "Allow for this task": set by the approval card, good until this answer ends.
@@ -448,13 +486,14 @@ export class Brain {
     this.abort?.abort();
   }
 
-  ask(text, target, { spoken = false } = {}) {
+  // `spoken` marks a question said out loud; `lang` is the language it was said in (two letters), when not English.
+  ask(text, target, { spoken = false, lang = "en" } = {}) {
     this.log.push({ role: "user", text });
-    return this.run(target, `${describeTarget(target)}\n\n${text}${spoken ? SPOKEN : ""}`);
+    return this.run(target, `${describeTarget(target)}\n\n${text}${spoken ? spokenNote(lang) : ""}`);
   }
 
   // The user highlighted things on screen with the marker and asked about them.
-  askWithMarks(text, { image, marks, target }, { spoken = false } = {}) {
+  askWithMarks(text, { image, marks, target }, { spoken = false, lang = "en" } = {}) {
     this.log.push({ role: "user", text: `${text} (about ${marks.length === 1 ? "1 mark" : `${marks.length} marks`})` });
     this.marks = new Map(marks.map((m) => [m.n, m.bounds]));
     const lines = marks.map((m) => {
@@ -467,7 +506,7 @@ export class Brain {
       describeTarget(target),
       `The user highlighted ${marks.length === 1 ? "one thing" : `${marks.length} things`} on screen with a marker. The image shows that area with their translucent blue marker strokes, each numbered at its start. Refer to them as mark 1, mark 2 (they see the numbers). You can fly your pointer to a mark with point_at mark=<n>.`,
       lines.join("\n"),
-      `Their question: ${text}${spoken ? SPOKEN : ""}`,
+      `Their question: ${text}${spoken ? spokenNote(lang) : ""}`,
     ].join("\n\n");
     return this.run(target, [
       { type: "image", source: { type: "base64", media_type: "image/png", data: image } },
@@ -551,9 +590,9 @@ export class Brain {
       const response = await this.client.beta.messages
         .stream(
           {
-            model: MODEL,
+            model: this.model,
             max_tokens: 32000,
-            output_config: { effort: EFFORT },
+            output_config: { effort: this.effort },
             cache_control: { type: "ephemeral" },
             betas: ["server-side-fallback-2026-07-01"],
             fallbacks: "default",
@@ -612,7 +651,7 @@ export class Brain {
    * @returns {import("./approvals.js").Ask}
    */
   asking({ ref = null, note } = {}) {
-    return { confirm: (...a) => this.ui.confirm(...a), bounds: ref ? this.bounds.get(ref) ?? null : null, note, standing: this.standing };
+    return { confirm: (...a) => this.ui.confirm(...a), bounds: ref ? this.bounds.get(ref) ?? null : null, note, standing: this.standing, policy: agentPolicy ?? undefined };
   }
 
   // Everything that operates the computer comes through here: the user's OK yields a slip, and only the slip runs
@@ -622,12 +661,32 @@ export class Brain {
    * @param {{ ref?: string | null, note?: string, status?: string }} [how]
    */
   async operate(action, { ref = null, note, status } = {}) {
+    const verdict = agentPolicy ? decide(agentPolicy, action) : "ask";
+    if (verdict === "block") {
+      this.ui.trace?.({ kind: "policy-blocked", app: action.app, action: action.kind });
+      return `Not allowed: the user has told Buddy never to act in ${action.app} (Settings › Agents). Tell them; don't try another way.`;
+    }
     const slip = await requestApproval(action, this.asking({ ref, note }));
     if (!slip) return "The user declined.";
+    if (verdict === "allow") {
+      this.ui.trace?.({ kind: "policy-allowed", app: action.app, action: action.kind });
+      status = `Allowed by your Agents settings: ${action.summary}`;
+    }
     return takeTurn(async () => {
       this.ui.status(status ?? action.summary);
       return trimEnvelope(await perform(slip, { session: this.session }));
     });
+  }
+
+  // Remembers which app each element in a snapshot belongs to, so the Agents policy judges the app an action lands in.
+  noteApp(tree, app) {
+    if (!app) return;
+    const walk = (n) => {
+      if (!n) return;
+      if (n.ref_id) this.refApps.set(n.ref_id, app);
+      for (const c of n.children ?? []) walk(c);
+    };
+    walk(tree);
   }
 
   async runTool(name, input) {
@@ -640,6 +699,7 @@ export class Brain {
           : await snapshotResilient(this.windowArgs(input), extra, { timeoutMs: 20_000, session: this.session });
         if (!res.ok) return trimEnvelope(res);
         const { text } = renderTree(res.data.tree, this.bounds, undefined, this.labels);
+        this.noteApp(res.data.tree, input.root ? this.refApps.get(input.root) : res.data.app ?? input.app ?? this.target?.app_name);
         const unreadable = res.data.unreadable_regions ? ` · ${res.data.unreadable_regions} region(s) unreadable, take a screenshot if what you need isn't here` : "";
         const head = `window: ${res.data.window?.title ?? res.data.app ?? "?"} · ${res.data.ref_count ?? 0} refs${res.data.complete === false ? " · partial" : ""}${unreadable}`;
         return `${head}\n${text}`;
@@ -694,7 +754,7 @@ export class Brain {
       }
       case "launch_app": {
         if (!input.name) return "launch_app needs a name.";
-        return this.operate({ args: ["launch", input.name], headed: false, summary: `Open ${input.name}` }, { status: `Opening ${input.name}…` });
+        return this.operate({ kind: "launch", app: input.name, args: ["launch", input.name], headed: false, summary: `Open ${input.name}` }, { status: `Opening ${input.name}…` });
       }
       case "create_document": {
         if (!input.title?.trim() || !input.markdown?.trim()) return "create_document needs a title and markdown.";
@@ -710,7 +770,7 @@ export class Brain {
         if (!command || !input.app) return "window needs an action and an app.";
         const args = [command, "--app", input.app, ...(input.window_id ? ["--window-id", input.window_id] : [])];
         const verb = `${input.action[0].toUpperCase()}${input.action.slice(1)}`;
-        return this.operate({ args, headed: true, summary: `${verb} ${input.app.replace(/\.exe$/i, "")}` });
+        return this.operate({ kind: input.action, app: input.app, args, headed: true, summary: `${verb} ${input.app.replace(/\.exe$/i, "")}` });
       }
       case "wait_for_user": {
         if (!this.target) return "I don't know which window they're working in; look first.";
@@ -722,6 +782,7 @@ export class Brain {
           const done = `They did it: "${input.text}" is on screen now.`;
           if (!result.snapshot) return `${done} Look again before pointing at the next step.`;
           const { text } = renderTree(result.snapshot.tree, this.bounds, undefined, this.labels);
+          this.noteApp(result.snapshot.tree, result.window?.app_name);
           const w = result.window;
           const where = w.id === this.target.id ? "their window" : `a new window "${w.title}" (window_id ${w.id})`;
           return `${done} Here is ${where} now; point at the next step with these refs:\n${text}`;
@@ -741,13 +802,13 @@ export class Brain {
     if (input.action === "press") {
       if (!input.keys) return "press needs keys.";
       const app = this.target ? ["--app", this.target.app_name] : [];
-      return this.operate({ args: ["press", input.keys, ...app], headed: true, summary: this.describeAction(input) }, how);
+      return this.operate({ kind: "press", app: this.target?.app_name, args: ["press", input.keys, ...app], headed: true, summary: this.describeAction(input) }, how);
     }
     const spec = ACTION_ARGS[input.action];
     if (!spec) return `Unknown action ${input.action}.`;
     if (!input.ref) return `${input.action} needs a ref.`;
     if (spec.text && input.text == null) return `${input.action} needs text.`;
     const args = [spec.cmd, input.ref, ...(spec.text ? [input.text] : [])];
-    return this.operate({ args, headed: !!spec.headed, summary: this.describeAction(input) }, { ...how, ref: input.ref });
+    return this.operate({ kind: input.action, app: this.refApps.get(input.ref) ?? this.target?.app_name, args, headed: !!spec.headed, summary: this.describeAction(input) }, { ...how, ref: input.ref });
   }
 }

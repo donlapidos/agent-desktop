@@ -1,0 +1,836 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Buddy Settings</title>
+<style>
+  @font-face { font-family: "Schibsted Grotesk"; src: url("fonts/schibsted-grotesk-var.woff2") format("woff2"); font-weight: 400 900; }
+  /* Settings wear the same near-black chrome as the bubble and task windows. The accent (--buddy, chosen here and
+     painted in by main.js) marks only what is selected, focused or the primary action. Every change applies at once. */
+  :root {
+    --buddy: #2f7aff;
+    --bg: #0c0d10; --rail: #0f1114; --fg: #eef0f3; --muted: #8b919c; --faint: #5d636e; --line: rgba(255,255,255,.07);
+    --field: #1a1c21; --field-hover: #23262d; --field-press: #2a2d34; --danger: #ff8a5c;
+    --accent-soft: color-mix(in srgb, var(--buddy) 16%, transparent);
+    --accent-text: color-mix(in srgb, var(--buddy) 55%, white);
+    --ease: cubic-bezier(.2,.8,.2,1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13.5px/1.45 "Schibsted Grotesk", "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+  body { display: grid; grid-template-rows: 44px 1fr; box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+  ::selection { background: color-mix(in srgb, var(--buddy) 45%, transparent); color: #fff; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid color-mix(in srgb, var(--buddy) 80%, transparent); outline-offset: 2px; }
+  svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Title bar */
+  header { display: flex; align-items: center; gap: 10px; padding: 0 6px 0 16px; -webkit-app-region: drag; user-select: none; border-bottom: 1px solid var(--line); }
+  header .mark { width: 9px; height: 9px; border-radius: 50%; background: var(--buddy); box-shadow: 0 0 10px color-mix(in srgb, var(--buddy) 60%, transparent); }
+  header h1 { flex: 1; margin: 0; font-size: 13.5px; font-weight: 600; }
+  .win { -webkit-app-region: no-drag; width: 34px; height: 30px; border: 0; border-radius: 8px; background: none; color: var(--muted); display: grid; place-items: center; }
+  .win:hover { background: var(--field); color: var(--fg); }
+  .win.close:hover { background: #3a1e1a; color: var(--danger); }
+  .win svg { width: 12px; height: 12px; }
+
+  /* Rail + pane */
+  .shell { display: grid; grid-template-columns: 184px 1fr; min-height: 0; }
+  nav { background: var(--rail); border-right: 1px solid var(--line); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+  nav button { display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 9px; background: none; color: var(--muted); text-align: left; font-weight: 500; transition: background .15s, color .15s; }
+  nav button:hover { background: rgba(255,255,255,.035); color: var(--fg); }
+  nav button[aria-current="page"] { background: var(--field); color: var(--fg); font-weight: 600; }
+  nav button[aria-current="page"] svg { color: var(--buddy); }
+  nav .foot { margin-top: auto; padding: 10px; font-size: 11.5px; color: var(--faint); line-height: 1.4; display: grid; gap: 6px; justify-items: start; }
+
+  /* Lists of apps (Agents) */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chips:empty { display: none; }
+  .app-chip { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 4px 0 11px; border-radius: 14px; background: var(--field); font-size: 12.5px; }
+  .app-chip button { width: 22px; height: 22px; border: 0; border-radius: 11px; background: none; color: var(--muted); display: grid; place-items: center; }
+  .app-chip button:hover { background: var(--field-hover); color: var(--danger); }
+  .app-chip svg { width: 10px; height: 10px; }
+  .muted-group { opacity: .55; }
+
+  /* Routines */
+  .routine { display: grid; grid-template-columns: 1fr auto; gap: 6px 14px; align-items: center; padding: 14px 0; border-top: 1px solid var(--line); }
+  .routine:first-child { border-top: 0; padding-top: 4px; }
+  .routine b { font-weight: 600; }
+  .routine .when { color: var(--muted); font-size: 12.5px; }
+  .routine .status { grid-column: 1 / -1; color: var(--faint); font-size: 12px; }
+  .routine .status:empty { display: none; }
+  .routine .actions { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .empty { padding: 14px 16px; border-radius: 12px; background: var(--field); color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  .editor { display: grid; gap: 12px; padding: 16px; border-radius: 14px; background: #121418; box-shadow: inset 0 0 0 1px var(--line); margin-top: 12px; }
+  .editor label { display: grid; gap: 5px; font-weight: 600; font-size: 12.5px; }
+  .editor textarea { resize: vertical; min-height: 84px; padding: 9px 11px; border: 1px solid transparent; border-radius: 9px; background: var(--field); outline: none; font: inherit; color: inherit; line-height: 1.45; }
+  .editor textarea:focus, .editor input:focus, .editor select:focus { border-color: color-mix(in srgb, var(--buddy) 70%, transparent); }
+  .editor input[type="time"], .editor select { height: 32px; padding: 0 9px; border: 1px solid transparent; border-radius: 9px; background: var(--field); color: inherit; font: inherit; color-scheme: dark; outline: none; }
+  .days { display: flex; gap: 4px; flex-wrap: wrap; }
+  .days button { width: 42px; height: 30px; border: 0; border-radius: 8px; background: var(--field); color: var(--muted); font-weight: 550; }
+  .days button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1.5px var(--buddy); }
+  main { overflow-y: auto; padding: 22px 28px 32px; scrollbar-gutter: stable; }
+  main::-webkit-scrollbar { width: 10px; }
+  main::-webkit-scrollbar-thumb { background: #2a2d34; border-radius: 5px; border: 2px solid var(--bg); }
+  section[hidden] { display: none; }
+  h2 { margin: 0 0 4px; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+  .lede { margin: 0 0 18px; color: var(--muted); }
+  .group { padding: 18px 0; border-top: 1px solid var(--line); }
+  .group:first-of-type { border-top: 0; padding-top: 4px; }
+  .group h3 { margin: 0 0 3px; font-size: 13.5px; font-weight: 600; }
+  .group .help { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; }
+  .note { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+  .problem { margin: 8px 0 0; color: var(--danger); font-size: 12.5px; }
+  .problem:empty { display: none; }
+
+  /* Buttons */
+  .btn { height: 32px; padding: 0 13px; border: 0; border-radius: 9px; background: var(--field); font-weight: 550; display: inline-flex; align-items: center; gap: 7px; flex: none; white-space: nowrap; transition: background .15s; }
+  .btn:hover { background: var(--field-hover); }
+  .btn:active { background: var(--field-press); }
+  .btn.primary { background: var(--buddy); color: #fff; }
+  .btn.primary:hover { background: color-mix(in srgb, var(--buddy) 85%, white); }
+  .btn.danger { color: var(--danger); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .link { border: 0; background: none; padding: 0; color: var(--accent-text); font-size: 12.5px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--buddy) 45%, transparent); }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+  /* Segmented control */
+  .seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 11px; background: var(--field); }
+  .seg button { height: 28px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-weight: 550; transition: background .15s, color .15s; }
+  .seg button:hover { color: var(--fg); }
+  .seg button[aria-pressed="true"] { background: #2b2f37; color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+
+  /* Voices: ten numbered swatches; choosing one plays it */
+  .voices { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .voice { position: relative; height: 50px; border: 0; border-radius: 12px; background: var(--field); display: grid; place-items: center; align-content: center; gap: 2px; transition: background .15s, box-shadow .15s; }
+  .voice:hover { background: var(--field-hover); }
+  .voice b { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; }
+  .voice[aria-checked="true"] { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--buddy); }
+  .voice[aria-checked="true"] b { color: var(--accent-text); }
+  .voice .wave { position: absolute; top: 7px; right: 8px; display: none; gap: 2px; align-items: end; height: 10px; }
+  .voice .wave i { width: 2px; border-radius: 1px; background: var(--accent-text); animation: talk .8s ease-in-out infinite; }
+  .voice .wave i:nth-child(2) { animation-delay: -.25s; } .voice .wave i:nth-child(3) { animation-delay: -.5s; }
+  .voice.playing .wave { display: flex; }
+  @keyframes talk { 0%, 100% { height: 3px; } 50% { height: 10px; } }
+
+  /* Speed */
+  .speed { display: flex; align-items: center; gap: 14px; max-width: 420px; }
+  .speed output { width: 46px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .speed small { color: var(--faint); font-size: 11.5px; }
+  input[type="range"] { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--buddy) var(--fill, 50%), #2a2d34 var(--fill, 50%)); }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.5), 0 0 0 3px color-mix(in srgb, var(--buddy) 40%, transparent); cursor: pointer; }
+
+  /* Accent swatches and a live preview of Buddy's pointer */
+  .swatches { display: flex; gap: 14px; flex-wrap: wrap; }
+  .swatch { border: 0; background: none; padding: 0; display: grid; justify-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+  .swatch i { width: 30px; height: 30px; border-radius: 50%; background: var(--c); box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); transition: box-shadow .15s, transform .15s var(--ease); }
+  .swatch:hover i { transform: scale(1.06); }
+  .swatch[aria-checked="true"] { color: var(--fg); }
+  .swatch[aria-checked="true"] i { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--c); }
+  .preview { margin-top: 16px; height: 88px; border-radius: 12px; background: #e9ebee; position: relative; overflow: hidden; }
+  .preview .ring { position: absolute; left: 26px; top: 26px; width: 96px; height: 32px; border-radius: 7px; border: 2px solid var(--buddy); box-shadow: 0 0 0 4px color-mix(in srgb, var(--buddy) 30%, transparent); background: #fff; font: 600 12.5px "Segoe UI", sans-serif; color: #1f2329; display: grid; place-items: center; }
+  .preview svg { position: absolute; left: 112px; top: 42px; width: 22px; height: 22px; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--buddy) 35%, transparent)) drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+  .preview .cap { position: absolute; left: 140px; top: 52px; padding: 6px 10px; border-radius: 11px; background: var(--buddy); color: #fff; font-size: 12.5px; box-shadow: 0 6px 16px rgba(0,0,0,.2); }
+
+  /* Shortcuts */
+  .keys { display: grid; gap: 0; }
+  .key-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+  .key-row:first-child { border-top: 0; }
+  .key-row .what b { display: block; font-weight: 600; }
+  .key-row .what span { color: var(--muted); font-size: 12.5px; }
+  .keycap { min-width: 150px; height: 34px; padding: 0 8px; border: 0; border-radius: 10px; background: var(--field); display: inline-flex; align-items: center; justify-content: center; gap: 4px; transition: background .15s, box-shadow .15s; }
+  .keycap:hover { background: var(--field-hover); }
+  .keycap kbd { min-width: 24px; height: 22px; padding: 0 6px; border-radius: 6px; background: #2b2f37; box-shadow: inset 0 -1px 0 rgba(0,0,0,.4); font: 600 11.5px "Schibsted Grotesk", sans-serif; display: inline-grid; place-items: center; }
+  .keycap.recording { box-shadow: inset 0 0 0 1.5px var(--buddy); background: var(--accent-soft); color: var(--accent-text); font-weight: 550; animation: rec 1.4s ease-in-out infinite; }
+  @keyframes rec { 50% { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--buddy) 45%, transparent); } }
+  .keycap:disabled { cursor: default; opacity: .6; }
+  .key-row .side { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+  .key-row .problem { grid-column: 1 / -1; margin: 0; }
+
+  /* Claude, privacy & startup */
+  .status { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,.6); }
+  .status.none .dot { background: var(--danger); box-shadow: none; }
+  .field { height: 34px; flex: 1; min-width: 220px; padding: 0 11px; border: 1px solid transparent; border-radius: 9px; background: var(--field); outline: none; }
+  .field:focus { border-color: color-mix(in srgb, var(--buddy) 70%, transparent); }
+  .field::placeholder { color: #6f7682; }
+  .models { display: grid; gap: 6px; max-width: 440px; }
+  .model { display: grid; grid-template-columns: 18px 1fr; gap: 2px 10px; align-items: start; padding: 10px 12px; border: 0; border-radius: 11px; background: var(--field); text-align: left; transition: background .15s, box-shadow .15s; }
+  .model:hover { background: var(--field-hover); }
+  .model .radio { grid-row: span 2; width: 16px; height: 16px; margin-top: 1px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px #4a4f59; }
+  .model b { font-weight: 600; }
+  .model span { color: var(--muted); font-size: 12.5px; }
+  .model[aria-checked="true"] { box-shadow: inset 0 0 0 1.5px var(--buddy); background: var(--accent-soft); }
+  .model[aria-checked="true"] .radio { box-shadow: inset 0 0 0 5px var(--buddy); background: #fff; }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .switch { width: 40px; height: 22px; flex: none; border: 0; border-radius: 11px; background: #33373f; position: relative; transition: background .18s; }
+  .switch::after { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .18s var(--ease); box-shadow: 0 1px 2px rgba(0,0,0,.4); }
+  .switch[aria-checked="true"] { background: var(--buddy); }
+  .switch[aria-checked="true"]::after { transform: translateX(18px); }
+  .data-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; }
+  .data-row + .data-row { border-top: 1px solid var(--line); }
+  .data-row b { display: block; font-weight: 600; }
+  .data-row span { color: var(--muted); font-size: 12.5px; }
+  .fixed { color: var(--faint); font-size: 12px; }
+
+  @media (prefers-reduced-motion: reduce) { *, *::after { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="mark" aria-hidden="true"></span>
+  <h1>Settings</h1>
+  <button class="win" id="min" title="Minimize" aria-label="Minimize"><svg viewBox="0 0 12 12" class="i"><path d="M2 6.5 H10"/></svg></button>
+  <button class="win close" id="close" title="Close" aria-label="Close"><svg viewBox="0 0 12 12" class="i"><path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5"/></svg></button>
+</header>
+<div class="shell">
+  <nav aria-label="Settings sections">
+    <button data-page="voice"><svg class="i" viewBox="0 0 16 16"><path d="M2 7v2M5 5v6M8 2.5v11M11 5v6M14 7v2"/></svg>Voice &amp; speech</button>
+    <button data-page="dictation"><svg class="i" viewBox="0 0 16 16"><rect x="5.5" y="1.8" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v1.8M5.5 14.3h5"/></svg>Dictation</button>
+    <button data-page="look"><svg class="i" viewBox="0 0 16 16"><path d="M8 1.8C5.5 5 4 7.3 4 9.6a4 4 0 0 0 8 0C12 7.3 10.5 5 8 1.8z"/></svg>Look</button>
+    <button data-page="keys"><svg class="i" viewBox="0 0 16 16"><rect x="1.8" y="4" width="12.4" height="8.5" rx="1.6"/><path d="M4.5 6.8h.01M7 6.8h.01M9.5 6.8h.01M12 6.8h.01M5 9.8h6"/></svg>Shortcuts</button>
+    <button data-page="agents"><svg class="i" viewBox="0 0 16 16"><path d="M3 2.5 13 7.2 8.2 8.4 6.4 13z"/></svg>Agents</button>
+    <button data-page="routines"><svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8.5" r="5.7"/><path d="M8 5.3v3.4l2.2 1.4M6 1.5h4"/></svg>Routines</button>
+    <button data-page="claude"><svg class="i" viewBox="0 0 16 16"><path d="M8 1.8 13 3.8v4c0 3-2.2 5.3-5 6.4C5.2 13.1 3 10.8 3 7.8v-4z"/><path d="m6 8 1.5 1.5L10.3 6.6"/></svg>Claude &amp; privacy</button>
+    <div class="foot">
+      <button class="link" id="feature">Request a feature</button>
+      <span>Changes apply right away.</span>
+    </div>
+  </nav>
+  <main>
+    <section id="page-voice">
+      <h2>Voice &amp; speech</h2>
+      <p class="lede">How Buddy sounds when it talks back. Speech runs on this PC; nothing you say leaves it.</p>
+      <div class="group">
+        <h3>Voice</h3>
+        <p class="help">Choose one to hear it.</p>
+        <div class="voices" id="voices" role="radiogroup" aria-label="Voice"></div>
+        <p class="fixed" id="voice-fixed" hidden>Set by BUDDY_VOICE, which overrides this.</p>
+      </div>
+      <div class="group">
+        <h3>Speaking speed</h3>
+        <p class="help">How fast Buddy talks. Let go of the slider to hear it.</p>
+        <div class="speed">
+          <small>Slower</small>
+          <input type="range" id="speed" aria-label="Speaking speed">
+          <small>Faster</small>
+          <output id="speed-out" for="speed"></output>
+        </div>
+      </div>
+      <div class="group">
+        <h3>Talk back</h3>
+        <p class="help" id="talkback-help"></p>
+        <div class="seg" id="talkback" role="group" aria-label="Talk back"></div>
+      </div>
+    </section>
+
+    <section id="page-dictation" hidden>
+      <h2>Dictation</h2>
+      <p class="lede">Say it, and Buddy types it into whatever you're writing in: an email, a document, a chat. It runs on this PC and needs no API key.</p>
+      <div class="group">
+        <h3>Shortcut</h3>
+        <p class="help">Press it in any app to start dictating.</p>
+        <div class="row"><span class="keycap" id="dictate-key" aria-hidden="true"></span><button class="link" id="dictate-change">Change in Shortcuts</button></div>
+      </div>
+      <div class="group">
+        <h3>When to stop</h3>
+        <p class="help" id="dictate-stop-help"></p>
+        <div class="seg" id="dictate-stop" role="group" aria-label="When to stop"></div>
+      </div>
+      <div class="group">
+        <h3>Language</h3>
+        <p class="help" id="language-help"></p>
+        <div class="seg" id="language" role="group" aria-label="Listening language"></div>
+        <p class="note">Also used when you talk to Buddy; it answers in the language you spoke.</p>
+      </div>
+      <div class="group">
+        <h3>How it types</h3>
+        <p class="help" style="margin:0">Buddy pastes what you said where your cursor is, then puts back whatever you had copied.</p>
+      </div>
+    </section>
+
+    <section id="page-agents" hidden>
+      <h2>Agents</h2>
+      <p class="lede">Agents are Buddy doing things for you: tasks, routines and "do it for me". Choose how much they may do without asking, and where they may act at all.</p>
+      <div class="group">
+        <h3>Without asking, agents may…</h3>
+        <div class="models" id="rope" role="radiogroup" aria-label="How much agents may do without asking"></div>
+      </div>
+      <div class="group" id="trusted-group">
+        <h3>Trusted apps</h3>
+        <p class="help" id="trusted-help"></p>
+        <div class="chips" id="trusted"></div>
+        <div class="row"><input class="field" id="trusted-input" list="running-apps" placeholder="App name, e.g. Excel" autocomplete="off" spellcheck="false"><button class="btn" id="trusted-add">Add</button></div>
+      </div>
+      <div class="group">
+        <h3>Never act in</h3>
+        <p class="help">Agents won't click, type or move windows in these apps at all, even if you'd approve. Password managers are listed to start with.</p>
+        <div class="chips" id="blocked"></div>
+        <div class="row"><input class="field" id="blocked-input" list="running-apps" placeholder="App name, e.g. KeePass" autocomplete="off" spellcheck="false"><button class="btn" id="blocked-add">Add</button></div>
+      </div>
+      <datalist id="running-apps"></datalist>
+    </section>
+
+    <section id="page-routines" hidden>
+      <h2>Routines</h2>
+      <p class="lede">Tasks Buddy starts on a schedule, each in its own window tucked into the island. They follow your Agents rules, so anything that needs your OK waits for you.</p>
+      <div class="group">
+        <div id="routines"></div>
+        <p class="problem" id="routine-problem"></p>
+        <div id="routine-editor"></div>
+        <div class="row" style="margin-top:12px"><button class="btn primary" id="routine-new">New routine</button></div>
+        <p class="note">Routines run while Buddy is running. One missed by less than six hours (the PC was asleep) runs when Buddy next can; older ones are skipped.</p>
+      </div>
+    </section>
+
+    <section id="page-look" hidden>
+      <h2>Look</h2>
+      <p class="lede">Buddy's colour: its pointer, the island, the chat and task windows, and what you mark.</p>
+      <div class="group">
+        <h3>Accent colour</h3>
+        <p class="help">Pick one that stands out against the apps you use most.</p>
+        <div class="swatches" id="swatches" role="radiogroup" aria-label="Accent colour"></div>
+        <div class="preview" aria-hidden="true">
+          <div class="ring">Insert</div>
+          <svg viewBox="0 0 22 22"><path d="M3 2 L19 10 L11.5 12 L8.5 19.5 Z" style="fill: var(--buddy)" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <div class="cap">Click Insert</div>
+        </div>
+      </div>
+      <div class="group">
+        <h3>Explainer appearance</h3>
+        <p class="help">Explainer plates follow this; Buddy's own windows stay dark.</p>
+        <div class="seg" id="appearance" role="group" aria-label="Explainer appearance"></div>
+        <p class="fixed" id="appearance-fixed" hidden>Set by BUDDY_THEME, which overrides this.</p>
+      </div>
+    </section>
+
+    <section id="page-keys" hidden>
+      <h2>Shortcuts</h2>
+      <p class="lede">Work from any app. Click a shortcut, then press the keys you want; Esc cancels.</p>
+      <div class="group keys" id="keys"></div>
+    </section>
+
+    <section id="page-claude" hidden>
+      <h2>Claude &amp; privacy</h2>
+      <p class="lede">Buddy thinks with your own Anthropic API key. Questions, and what's on screen when you ask, go to Anthropic; nothing else does.</p>
+      <div class="group">
+        <h3>API key</h3>
+        <div id="key"></div>
+        <p class="problem" id="key-problem"></p>
+      </div>
+      <div class="group">
+        <h3>Model</h3>
+        <p class="help">Applies to new conversations.</p>
+        <div class="models" id="models" role="radiogroup" aria-label="Model"></div>
+        <p class="fixed" id="model-fixed" hidden>Set by BUDDY_MODEL, which overrides this.</p>
+      </div>
+      <div class="group">
+        <h3>Thinking effort</h3>
+        <p class="help">Low answers fastest and costs least; high is more careful. Applies to new conversations.</p>
+        <div class="seg" id="effort" role="group" aria-label="Thinking effort"></div>
+        <p class="fixed" id="effort-fixed" hidden>Set by BUDDY_EFFORT, which overrides this.</p>
+      </div>
+      <div class="group switch-row" id="startup-row">
+        <div>
+          <h3>Start with Windows</h3>
+          <p class="help" style="margin:0">Buddy starts in the background when you sign in.</p>
+        </div>
+        <button class="switch" id="startup" role="switch" aria-label="Start with Windows"></button>
+      </div>
+      <div class="group">
+        <h3>Your data</h3>
+        <p class="help">Kept on this PC.</p>
+        <div class="data-row">
+          <div><b>Saved explainers</b><span id="explainers-count"></span></div>
+          <div class="row" id="explainers-actions"></div>
+        </div>
+        <div class="data-row">
+          <div><b>Activity log</b><span id="log-size"></span></div>
+          <div class="row" id="log-actions"></div>
+        </div>
+        <div class="data-row">
+          <div><b>Data folder</b><span>Settings, saved explainers and the voice models.</span></div>
+          <button class="btn" id="open-data">Open folder</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, props = {}, ...children) => {
+    const n = Object.assign(document.createElement(tag), props);
+    for (const c of children) n.append(c);
+    return n;
+  };
+  let S = null; // the latest state from main
+  let recording = null; // the shortcut being recorded
+  const problems = {};
+
+  // ---------- Navigation: one section at a time; the last one is remembered ----------
+  const pages = ["voice", "dictation", "look", "keys", "agents", "routines", "claude"];
+  function show(page) {
+    for (const p of pages) $(`page-${p}`).hidden = p !== page;
+    for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-current", b.dataset.page === page ? "page" : "false");
+    try { localStorage.setItem("settings-page", page); } catch {}
+    document.querySelector("main").scrollTop = 0;
+    stopRecording();
+  }
+  for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => show(b.dataset.page));
+
+  async function set(patch) {
+    const res = await window.buddy.settingsSet(patch);
+    Object.assign(problems, Object.fromEntries(Object.keys(patch).flatMap((k) => (k === "hotkeys" ? Object.keys(patch.hotkeys).map((n) => [`hotkeys.${n}`, ""]) : [[k, ""]]))), res.problems);
+    render(res.state);
+    return res.problems;
+  }
+
+  const segmented = (box, options, value, onPick, disabled = false) => {
+    box.replaceChildren(...options.map(([v, label]) => {
+      const b = el("button", { textContent: label, disabled });
+      b.setAttribute("aria-pressed", String(v === value));
+      b.addEventListener("click", () => v !== value && onPick(v));
+      return b;
+    }));
+  };
+
+  // ---------- Voice ----------
+  let playingTimer;
+  function preview(sid, speed) {
+    window.buddy.settingsPreview(sid, speed);
+    for (const v of document.querySelectorAll(".voice")) v.classList.toggle("playing", Number(v.dataset.sid) === sid);
+    clearTimeout(playingTimer);
+    playingTimer = setTimeout(() => document.querySelectorAll(".voice").forEach((v) => v.classList.remove("playing")), 4500 / speed);
+  }
+
+  function renderVoice() {
+    const s = S.settings;
+    const box = $("voices");
+    if (!box.children.length) {
+      for (let sid = 0; sid < S.voices; sid++) {
+        const b = el("button", { className: "voice" }, el("span", { className: "wave" }, el("i"), el("i"), el("i")), el("b", { textContent: String(sid) }));
+        b.dataset.sid = String(sid);
+        b.setAttribute("role", "radio");
+        b.setAttribute("aria-label", `Voice ${sid}`);
+        b.addEventListener("click", async () => {
+          if (S.settings.voice !== sid) await set({ voice: sid });
+          preview(sid, S.settings.speed);
+        });
+        box.append(b);
+      }
+    }
+    for (const b of box.children) {
+      b.setAttribute("aria-checked", String(Number(b.dataset.sid) === s.voice));
+      b.disabled = S.fixed.voice;
+    }
+    $("voice-fixed").hidden = !S.fixed.voice;
+
+    const r = $("speed");
+    Object.assign(r, { min: S.speed.min, max: S.speed.max, step: S.speed.step });
+    if (document.activeElement !== r) r.value = s.speed;
+    paintSpeed();
+
+    const help = { spoken: "Buddy answers out loud when you asked out loud, and stays quiet when you typed.", always: "Buddy reads every answer aloud.", never: "Buddy never speaks; answers stay in the chat." };
+    $("talkback-help").textContent = help[s.talkBack];
+    segmented($("talkback"), [["spoken", "When I speak"], ["always", "Always"], ["never", "Never"]], s.talkBack, (v) => set({ talkBack: v }));
+  }
+  function paintSpeed() {
+    const r = $("speed");
+    const v = Number(r.value);
+    $("speed-out").textContent = `${v.toFixed(2)}×`;
+    r.style.setProperty("--fill", `${((v - S.speed.min) / (S.speed.max - S.speed.min)) * 100}%`);
+  }
+  $("speed").addEventListener("input", paintSpeed);
+  $("speed").addEventListener("change", async (e) => {
+    await set({ speed: Number(e.target.value) });
+    preview(S.settings.voice, S.settings.speed);
+  });
+
+  // ---------- Look ----------
+  function renderLook() {
+    const s = S.settings;
+    $("swatches").replaceChildren(...Object.entries(S.accents).map(([id, a]) => {
+      const b = el("button", { className: "swatch" }, el("i"), a.label);
+      b.style.setProperty("--c", a.hex);
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(id === s.accent));
+      b.addEventListener("click", () => id !== s.accent && set({ accent: id }));
+      return b;
+    }));
+    segmented($("appearance"), [["system", "Match Windows"], ["light", "Light"], ["dark", "Dark"]], s.appearance, (v) => set({ appearance: v }), S.fixed.appearance);
+    $("appearance-fixed").hidden = !S.fixed.appearance;
+  }
+
+  // ---------- Shortcuts ----------
+  const DESCRIBE = { ask: "Open or close the chat", talk: "Start talking; press again to send", mark: "Click to explain, or draw to ask", explain: "Explain whatever is under the pointer", dictate: "Type what you say into the app you're in" };
+  const KEY_LABEL = { Control: "Ctrl", Super: "Win", Alt: "Alt", Shift: "Shift", Up: "↑", Down: "↓", Left: "←", Right: "→", PageUp: "Page Up", PageDown: "Page Down" };
+  const caps = (accel) => accel.split("+").map((k) => el("kbd", { textContent: KEY_LABEL[k] ?? k }));
+
+  function renderKeys() {
+    const box = $("keys");
+    box.replaceChildren(...Object.keys(S.labels).map((name) => {
+      const accel = S.settings.hotkeys[name];
+      const fixed = S.fixed.hotkeys.includes(name);
+      const cap = el("button", { className: "keycap", disabled: fixed });
+      cap.setAttribute("aria-label", `${S.labels[name]} shortcut: ${accel}. Click to change.`);
+      if (recording === name) {
+        cap.classList.add("recording");
+        cap.textContent = "Press keys…";
+      } else cap.append(...caps(accel));
+      cap.addEventListener("click", () => (recording === name ? stopRecording() : startRecording(name)));
+      const side = el("div", { className: "side" });
+      if (!fixed && accel !== S.defaultHotkeys[name]) {
+        const reset = el("button", { className: "link", textContent: "Reset" });
+        reset.addEventListener("click", () => set({ hotkeys: { [name]: S.defaultHotkeys[name] } }));
+        side.append(reset);
+      }
+      side.append(cap);
+      const taken = S.taken.includes(name) ? "Another app has this shortcut, so it isn't working. Pick a different one." : "";
+      const note = fixed ? "Set by an environment variable." : problems[`hotkeys.${name}`] || taken;
+      return el("div", { className: "key-row" },
+        el("div", { className: "what" }, el("b", { textContent: S.labels[name] }), el("span", { textContent: DESCRIBE[name] })),
+        side,
+        el("p", { className: fixed ? "fixed" : "problem", textContent: note }));
+    }));
+  }
+
+  // Accelerator text from a key press, in Electron's form: modifiers in a fixed order, then one key.
+  const CODE_KEYS = { Space: "Space", Insert: "Insert", Delete: "Delete", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
+  function accelerator(e) {
+    let key = null;
+    if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
+    else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
+    else if (/^F([1-9]|1\d|2[0-4])$/.test(e.code)) key = e.code;
+    else key = CODE_KEYS[e.code] ?? null;
+    const mods = [e.ctrlKey && "Control", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
+    return { key, mods };
+  }
+
+  function startRecording(name) {
+    recording = name;
+    problems[`hotkeys.${name}`] = "";
+    window.buddy.settingsCapture(true);
+    renderKeys();
+  }
+  function stopRecording() {
+    if (!recording) return;
+    recording = null;
+    window.buddy.settingsCapture(false);
+    if (S) renderKeys();
+  }
+  addEventListener("keydown", async (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    if (e.key === "Escape") return stopRecording();
+    if (["Control", "Alt", "Shift", "Meta", "OS"].includes(e.key)) return;
+    const { key, mods } = accelerator(e);
+    const name = recording;
+    if (!key) {
+      problems[`hotkeys.${name}`] = "That key can't be part of a shortcut. Try a letter, number or F-key.";
+      return renderKeys();
+    }
+    if (!mods.some((m) => m !== "Shift")) {
+      problems[`hotkeys.${name}`] = "Add Ctrl, Alt or the Windows key, so the shortcut doesn't get in the way of typing.";
+      return renderKeys();
+    }
+    recording = null;
+    await set({ hotkeys: { [name]: [...mods, key].join("+") } });
+    window.buddy.settingsCapture(false);
+  });
+  addEventListener("blur", stopRecording);
+
+  // ---------- Claude, privacy & startup ----------
+  let replacingKey = false;
+  let confirming = null; // "explainers" | "remove-key"
+
+  function renderClaude() {
+    // A background update mustn't wipe a key being typed.
+    if (document.activeElement?.id !== "key-input") renderKeyBox();
+    renderClaudeRest();
+  }
+
+  function renderKeyBox() {
+    const box = $("key");
+    box.replaceChildren();
+    if (S.key.fromEnv) {
+      box.append(el("div", { className: "status" }, el("span", { className: "dot" }), "Using ANTHROPIC_API_KEY from the environment."));
+    } else if (S.key.saved && !replacingKey) {
+      const replace = el("button", { className: "btn", textContent: "Replace key" });
+      replace.addEventListener("click", () => { replacingKey = true; renderClaude(); $("key-input")?.focus(); });
+      const actions = el("div", { className: "row" }, replace);
+      if (confirming === "remove-key") {
+        const yes = el("button", { className: "btn danger", textContent: "Remove it" });
+        const no = el("button", { className: "btn", textContent: "Keep it" });
+        yes.addEventListener("click", async () => { confirming = null; render(await window.buddy.settingsKeyRemove()); });
+        no.addEventListener("click", () => { confirming = null; renderClaude(); });
+        actions.replaceChildren(el("span", { textContent: "Buddy will stop answering until you add a key." }), yes, no);
+      } else {
+        const remove = el("button", { className: "btn danger", textContent: "Remove" });
+        remove.addEventListener("click", () => { confirming = "remove-key"; renderClaude(); });
+        actions.append(remove);
+      }
+      box.append(el("div", { className: "status" }, el("span", { className: "dot" }), "A key is saved, encrypted on this PC."), actions);
+    } else {
+      const input = el("input", { className: "field", id: "key-input", type: "password", placeholder: "sk-ant-…", autocomplete: "off", spellcheck: false });
+      const save = el("button", { className: "btn primary", textContent: "Save key" });
+      const submit = async () => {
+        if (!input.value.trim()) return;
+        const res = await window.buddy.settingsKey(input.value);
+        input.blur(); // so the box can redraw as "saved"
+        input.value = "";
+        $("key-problem").textContent = res.error ?? "";
+        if (!res.error) replacingKey = false;
+        render(res.state);
+      };
+      save.addEventListener("click", submit);
+      input.addEventListener("keydown", (e) => e.key === "Enter" && submit());
+      const row = el("div", { className: "row" }, input, save);
+      if (S.key.saved) {
+        const cancel = el("button", { className: "btn", textContent: "Cancel" });
+        cancel.addEventListener("click", () => { replacingKey = false; $("key-problem").textContent = ""; renderClaude(); });
+        row.append(cancel);
+      }
+      box.append(
+        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : "No key yet. Buddy can't answer until you add one."),
+        row,
+        el("p", { className: "note", textContent: "Get one at console.anthropic.com. It's stored encrypted with Windows and never shown again." }),
+      );
+    }
+  }
+
+  function renderClaudeRest() {
+    const s = S.settings;
+    $("models").replaceChildren(...S.models.map((m) => {
+      const b = el("button", { className: "model", disabled: S.fixed.model }, el("span", { className: "radio" }), el("b", { textContent: m.label }), el("span", { textContent: m.note }));
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(m.id === s.model));
+      b.addEventListener("click", () => m.id !== s.model && set({ model: m.id }));
+      return b;
+    }));
+    $("model-fixed").hidden = !S.fixed.model;
+    segmented($("effort"), S.efforts.map((e) => [e, e[0].toUpperCase() + e.slice(1)]), s.effort, (v) => set({ effort: v }), S.fixed.effort);
+    $("effort-fixed").hidden = !S.fixed.effort;
+
+    $("startup").setAttribute("aria-checked", String(S.startsWithWindows));
+
+    const n = S.data.explainers;
+    $("explainers-count").textContent = n ? ` ${n} plate${n === 1 ? "" : "s"}, in your data folder.` : " None yet.";
+    const ex = $("explainers-actions");
+    if (confirming === "explainers") {
+      const yes = el("button", { className: "btn danger", textContent: `Delete ${n}` });
+      const no = el("button", { className: "btn", textContent: "Keep" });
+      yes.addEventListener("click", async () => { confirming = null; render(await window.buddy.settingsClear("explainers")); });
+      no.addEventListener("click", () => { confirming = null; renderClaude(); });
+      ex.replaceChildren(yes, no);
+    } else {
+      const clear = el("button", { className: "btn", textContent: "Clear…", disabled: !n });
+      clear.addEventListener("click", () => { confirming = "explainers"; renderClaude(); });
+      ex.replaceChildren(clear);
+    }
+    const kb = S.data.logBytes;
+    $("log-size").textContent = kb ? ` Timings of each step, ${kb < 1024 ? `${kb} bytes` : `${Math.round(kb / 1024)} KB`}; no screen content.` : " Empty.";
+    const clearLog = el("button", { className: "btn", textContent: "Clear", disabled: !kb });
+    clearLog.addEventListener("click", async () => render(await window.buddy.settingsClear("log")));
+    $("log-actions").replaceChildren(clearLog);
+  }
+  $("startup").addEventListener("click", async () => render(await window.buddy.settingsStartup(!S.startsWithWindows)));
+  $("open-data").addEventListener("click", () => window.buddy.settingsOpenData());
+
+  // ---------- Dictation ----------
+  function renderDictation() {
+    const s = S.settings;
+    $("dictate-key").replaceChildren(...caps(s.hotkeys.dictate));
+    const stopHelp = { pause: "Buddy types what you said as soon as you pause. Good for a sentence or two.", press: "Keep talking through pauses; each sentence is typed as you go. Press the shortcut again to stop." };
+    $("dictate-stop-help").textContent = stopHelp[s.dictateStop];
+    segmented($("dictate-stop"), [["pause", "When I pause"], ["press", "When I press it again"]], s.dictateStop, (v) => set({ dictateStop: v }));
+    const langHelp = { en: "Fastest, and the most accurate for English.", auto: "Understands about 99 languages and works out which one you're speaking. Downloads a 160 MB model the first time." };
+    $("language-help").textContent = langHelp[s.language];
+    segmented($("language"), [["en", "English"], ["auto", "Detect automatically"]], s.language, (v) => set({ language: v }));
+  }
+  $("dictate-change").addEventListener("click", () => show("keys"));
+
+  // ---------- Agents ----------
+  const ROPES = [
+    ["ask", "Nothing: ask every time", "Every click, keystroke and window move waits for your OK. The safest."],
+    ["safe", "Make safe moves", "Scroll, expand and collapse, and move windows without asking. Anything that clicks, types or opens an app still asks."],
+    ["trusted", "Act freely in apps I trust", "In your trusted apps, agents act without asking. Everywhere else, safe moves only."],
+  ];
+  const X = () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("class", "i");
+    svg.innerHTML = '<path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5"/>';
+    return svg;
+  };
+  function appChips(box, key) {
+    box.replaceChildren(...S.settings[key].map((name) => {
+      const remove = el("button", { title: `Remove ${name}` }, X());
+      remove.setAttribute("aria-label", `Remove ${name}`);
+      remove.addEventListener("click", () => set({ [key]: S.settings[key].filter((x) => x !== name) }));
+      return el("span", { className: "app-chip" }, name, remove);
+    }));
+  }
+  function addApp(inputId, key) {
+    const input = $(inputId);
+    const name = input.value.trim();
+    if (!name) return;
+    input.value = "";
+    if (!S.settings[key].some((x) => x.toLowerCase() === name.toLowerCase())) set({ [key]: [...S.settings[key], name] });
+  }
+  for (const [inputId, key] of [["trusted-input", "trustedApps"], ["blocked-input", "blockedApps"]]) {
+    $(inputId).addEventListener("keydown", (e) => e.key === "Enter" && addApp(inputId, key));
+  }
+  $("trusted-add").addEventListener("click", () => addApp("trusted-input", "trustedApps"));
+  $("blocked-add").addEventListener("click", () => addApp("blocked-input", "blockedApps"));
+
+  function renderAgents() {
+    const s = S.settings;
+    $("rope").replaceChildren(...ROPES.map(([id, label, note]) => {
+      const b = el("button", { className: "model" }, el("span", { className: "radio" }), el("b", { textContent: label }), el("span", { textContent: note }));
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(id === s.rope));
+      b.addEventListener("click", () => id !== s.rope && set({ rope: id }));
+      return b;
+    }));
+    $("trusted-group").classList.toggle("muted-group", s.rope !== "trusted");
+    $("trusted-help").textContent = s.rope === "trusted"
+      ? "Agents act in these without asking. Add only apps where a mistake is easy to undo."
+      : "Used only with “Act freely in apps I trust”.";
+    appChips($("trusted"), "trustedApps");
+    appChips($("blocked"), "blockedApps");
+  }
+  // Suggest the apps open right now.
+  window.buddy.settingsApps().then((apps) => $("running-apps").replaceChildren(...apps.map((a) => el("option", { value: a.replace(/\.exe$/i, "") })))).catch(() => {});
+
+  // ---------- Routines ----------
+  let editing = null; // the routine being edited (a copy), or null
+  let deleting = null;
+  const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const newId = () => `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const when = (iso) => new Date(iso).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+  function renderRoutines() {
+    const list = S.settings.routines;
+    const box = $("routines");
+    if (!list.length) {
+      box.replaceChildren(el("div", { className: "empty", textContent: "No routines yet. For example: “Every weekday at 9:00, summarise my unread email and list anything urgent.”" }));
+    } else {
+      box.replaceChildren(...list.map((r) => {
+        const info = S.routineInfo[r.id] ?? {};
+        const toggle = el("button", { className: "switch" });
+        toggle.setAttribute("role", "switch");
+        toggle.setAttribute("aria-checked", String(r.enabled));
+        toggle.setAttribute("aria-label", `${r.name}: ${r.enabled ? "on" : "off"}`);
+        toggle.addEventListener("click", () => set({ routines: list.map((x) => (x.id === r.id ? { ...x, enabled: !x.enabled } : x)) }));
+        const actions = el("div", { className: "actions" });
+        if (deleting === r.id) {
+          const yes = el("button", { className: "btn danger", textContent: "Delete it" });
+          const no = el("button", { className: "btn", textContent: "Keep it" });
+          yes.addEventListener("click", () => { deleting = null; set({ routines: list.filter((x) => x.id !== r.id) }); });
+          no.addEventListener("click", () => { deleting = null; renderRoutines(); });
+          actions.append(yes, no);
+        } else {
+          const run = el("button", { className: "btn", textContent: "Run now", disabled: !S.key.saved && !S.key.fromEnv });
+          run.addEventListener("click", async () => {
+            const res = await window.buddy.settingsRunRoutine(r.id);
+            $("routine-problem").textContent = res.error ?? "";
+            render(res.state);
+          });
+          const edit = el("button", { className: "btn", textContent: "Edit" });
+          edit.addEventListener("click", () => { editing = structuredClone(r); renderRoutines(); });
+          const del = el("button", { className: "btn danger", textContent: "Delete" });
+          del.addEventListener("click", () => { deleting = r.id; renderRoutines(); });
+          actions.append(run, edit, del);
+        }
+        const next = r.enabled && info.next ? ` · next ${when(info.next)}` : r.enabled ? "" : " · off";
+        return el("div", { className: "routine" },
+          el("div", {}, el("b", { textContent: r.name }), el("div", { className: "when", textContent: `${info.schedule ?? ""}${next}` })),
+          toggle,
+          el("div", { className: "status", textContent: info.status ?? "" }),
+          actions);
+      }));
+    }
+    renderEditor();
+    $("routine-new").hidden = !!editing;
+  }
+
+  function renderEditor() {
+    const box = $("routine-editor");
+    if (!editing) return box.replaceChildren();
+    const r = editing;
+    const name = el("input", { className: "field", value: r.name, placeholder: "Morning inbox", maxLength: 60 });
+    name.addEventListener("input", () => (r.name = name.value));
+    const prompt = el("textarea", { value: r.prompt, placeholder: "Summarise my unread email in Outlook and list anything urgent.", maxLength: 2000 });
+    prompt.addEventListener("input", () => (r.prompt = prompt.value));
+    const every = el("div", { className: "seg" });
+    segmented(every, [["day", "Every day"], ["weekday", "Weekdays"], ["week", "Some days"], ["hours", "Every few hours"]], r.schedule.every, (v) => { r.schedule.every = v; renderEditor(); });
+    const time = el("input", { type: "time", value: r.schedule.time });
+    time.addEventListener("change", () => (r.schedule.time = time.value || "09:00"));
+    const detail = el("div", { className: "row" }, el("span", { textContent: r.schedule.every === "hours" ? "Starting at" : "At" }), time);
+    if (r.schedule.every === "hours") {
+      const hours = el("select", {}, ...[1, 2, 3, 4, 6, 8, 12].map((h) => el("option", { value: String(h), textContent: `every ${h === 1 ? "hour" : `${h} hours`}`, selected: h === r.schedule.hours })));
+      hours.addEventListener("change", () => (r.schedule.hours = Number(hours.value)));
+      detail.append(hours);
+    }
+    const parts = [el("label", {}, "Name", name), el("label", {}, "What should Buddy do?", prompt), el("label", {}, "When", every), detail];
+    if (r.schedule.every === "week") {
+      parts.push(el("div", { className: "days" }, ...DAY.map((d, i) => {
+        const b = el("button", { textContent: d });
+        b.setAttribute("aria-pressed", String(r.schedule.days.includes(i)));
+        b.addEventListener("click", () => {
+          r.schedule.days = r.schedule.days.includes(i) ? r.schedule.days.filter((x) => x !== i) : [...r.schedule.days, i].sort();
+          renderEditor();
+        });
+        return b;
+      })));
+    }
+    const save = el("button", { className: "btn primary", textContent: "Save routine" });
+    const cancel = el("button", { className: "btn", textContent: "Cancel" });
+    const problem = el("p", { className: "problem" });
+    save.addEventListener("click", async () => {
+      if (!r.prompt.trim()) return (problem.textContent = "Say what Buddy should do.");
+      if (r.schedule.every === "week" && !r.schedule.days.length) return (problem.textContent = "Pick at least one day.");
+      const list = S.settings.routines;
+      const next = list.some((x) => x.id === r.id) ? list.map((x) => (x.id === r.id ? r : x)) : [...list, r];
+      editing = null;
+      const problems = await set({ routines: next });
+      $("routine-problem").textContent = problems.routines ? "That routine couldn't be saved. You can have up to 20." : "";
+    });
+    cancel.addEventListener("click", () => { editing = null; renderRoutines(); });
+    box.replaceChildren(el("div", { className: "editor" }, ...parts, problem, el("div", { className: "row" }, save, cancel)));
+  }
+  $("routine-new").addEventListener("click", () => {
+    editing = { id: newId(), name: "", prompt: "", schedule: { every: "weekday", time: "09:00", days: [1], hours: 4 }, enabled: true, lastRun: null };
+    renderRoutines();
+  });
+
+  $("feature").addEventListener("click", () => window.buddy.settingsFeature());
+  // Changes made elsewhere (the tray, a routine running) arrive here too.
+  window.buddy.onSettingsChanged((state) => render(state));
+
+  // ---------- Everything ----------
+  function render(state) {
+    S = state;
+    renderVoice();
+    renderDictation();
+    renderLook();
+    renderKeys();
+    renderAgents();
+    if (!editing) renderRoutines();
+    renderClaude();
+  }
+
+  $("close").addEventListener("click", () => window.buddy.settingsClose());
+  $("min").addEventListener("click", () => window.buddy.settingsMinimize());
+  // Esc closes Settings, unless it was cancelling a shortcut being recorded (handled, and marked so, above).
+  addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented && e.target.tagName !== "INPUT") window.buddy.settingsClose(); });
+
+  (async () => {
+    let page = "voice";
+    try { page = pages.includes(localStorage.getItem("settings-page")) ? localStorage.getItem("settings-page") : "voice"; } catch {}
+    render(await window.buddy.settingsState());
+    show(page);
+  })();
+</script>
+</body>
+</html>

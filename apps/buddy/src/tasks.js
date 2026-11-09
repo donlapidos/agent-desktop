@@ -65,11 +65,15 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
     };
   }
 
-  /** Opens a task window. Pass `brain` to move an existing conversation (the bubble's) into it. */
-  async function create({ brain = null, target = null } = {}) {
+  /**
+   * Opens a task window. Pass `brain` to move an existing conversation (the bubble's) into it. A routine passes its
+   * `title` and `prompt`, `target: null` (it isn't about the window in front) and `tucked`, so it starts in the island.
+   * @param {{ brain?: any, target?: any, title?: string, prompt?: string, tucked?: boolean }} [opts]
+   */
+  async function create({ brain = null, target, title, prompt, tucked = false } = {}) {
     if (tasks.size >= MAX_TASKS) return { error: `You can have ${MAX_TASKS} tasks open at once. Close one first.` };
     const n = ++seq;
-    const t = { id: `t${n}`, n, title: `Task ${n}`, state: "idle", target: target ?? (await currentTarget()), pendingConfirm: null, busy: false };
+    const t = { id: `t${n}`, n, title: title ? shorten(title) : `Task ${n}`, state: "idle", target: target === undefined ? await currentTarget() : target, pendingConfirm: null, busy: false };
     const ui = uiFor(t);
     if (brain) {
       brain.ui = { ...brain.ui, ...ui };
@@ -97,8 +101,11 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
     t.win.loadFile(path.join(here, "ui/task.html"));
     t.win.webContents.once("did-finish-load", () => {
       send(t, "task-init", { n, title: t.title, target: t.target ? `${t.target.app_name} — ${t.target.title}` : null, transcript: t.brain.transcript() });
-      t.win.show();
-      t.win.focus();
+      if (!tucked) {
+        t.win.show();
+        t.win.focus();
+      }
+      if (prompt) send(t, "task-prompt", prompt);
     });
     // Seeing a finished task's answer settles its chip.
     t.win.on("focus", () => {

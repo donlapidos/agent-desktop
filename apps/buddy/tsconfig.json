@@ -24,6 +24,10 @@
     "src/voice.js",
     "src/speech.js",
     "src/models.js",
+    "src/settings.js",
+    "src/policy.js",
+    "src/routines.js",
+    "src/settings-window.js",
     "src/speakable.js",
     "src/explainer.js",
     "src/documents.js"

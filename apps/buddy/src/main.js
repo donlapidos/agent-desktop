@@ -1,17 +1,25 @@
 // Desktop Buddy: tray app, island, global hotkeys, pointer overlay, speech bubble and explainers around the Brain.
 import {
-  app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, screen,
-  session, shell, systemPreferences, Tray,
+  app, BrowserWindow, clipboard, ClipboardItem, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, screen,
+  session, shell, systemPreferences, Tray, webContents,
 } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Brain, SESSION_PREFIX } from "./brain.js";
-import { elementAt, elementsAt, foregroundWindow, resolveBinary, windowAt, windowsAt } from "./desktop.js";
+import { Brain, SESSION_PREFIX, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
+import { dictationPaste } from "./approvals.js";
+import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
 import { createTasks } from "./tasks.js";
 import { asDipPoint, asDipRect, asPhysicalPoint, asPhysicalRect } from "./geometry.js";
 import { BUSY, canMove } from "./modes.js";
+import {
+  ACCENTS, DEFAULTS, EFFORTS, HOTKEY_NAMES, MODELS, SPEED, VOICES, load as loadSettings, normalize as normalizeSettings,
+  save as saveSettings, update as updateSettings,
+} from "./settings.js";
+import { createSettingsWindow } from "./settings-window.js";
+import { describe as describeSchedule, nextRun, verdict as routineVerdict } from "./routines.js";
+import os from "node:os";
 import { createVoice } from "./voice.js";
 
 /** @typedef {import("./geometry.js").DipPoint} DipPoint */
@@ -20,12 +28,10 @@ import { createVoice } from "./voice.js";
 /** @typedef {import("./geometry.js").PhysicalRect} PhysicalRect */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// Not Ctrl+Alt+Space: the Claude desktop app's Quick Entry already owns it.
-const HOTKEY = process.env.BUDDY_HOTKEY ?? "Control+Alt+B";
-const EXPLAIN_HOTKEY = process.env.BUDDY_EXPLAIN_HOTKEY ?? "Control+Alt+E";
-const MARK_HOTKEY = process.env.BUDDY_MARK_HOTKEY ?? "Control+Alt+M";
-// Not Ctrl+Alt+V: that's Paste Special in Office.
-const TALK_HOTKEY = process.env.BUDDY_TALK_HOTKEY ?? "Control+Alt+T";
+// Global shortcuts come from Settings (the defaults in settings.js avoid Ctrl+Alt+Space, the Claude desktop app's
+// Quick Entry, and Ctrl+Alt+V, Paste Special in Office). BUDDY_*_HOTKEY environment variables override them.
+/** @type {Record<import("./settings.js").HotkeyName, string | undefined>} */
+const ENV_HOTKEYS = { ask: process.env.BUDDY_HOTKEY, talk: process.env.BUDDY_TALK_HOTKEY, mark: process.env.BUDDY_MARK_HOTKEY, explain: process.env.BUDDY_EXPLAIN_HOTKEY, dictate: process.env.BUDDY_DICTATE_HOTKEY };
 const IDLE_RESET_MS = 15 * 60_000;
 // The window starts at the top of the island so the card can slide out from under the pill; the card itself
 // sits 46px down (see bubble.html).
@@ -53,7 +59,12 @@ app.on("second-instance", () => summon());
 
 let tray, bubble, island, brain, tasks, voice;
 let spokenTurn = false; // the question being answered was said out loud
+let spokenLang = "en"; // the language it was said in (detected when Settings asks for it)
+let heardLang = "en"; // the language of the last thing heard, waiting for the bubble to send it
 let islandState = "idle";
+let islandText; // what the island says, so it can be re-sent when a shortcut label changes
+/** @type {import("./settings.js").Settings} */
+let settings = normalizeSettings({}); // loaded from disk once the app is ready
 let saying = "Speaking"; // the island's label while Buddy reads a reply aloud
 const overlays = new Map();
 // What Buddy is doing (see modes.js). `approval` is set while a "working" answer waits for the user's OK.
@@ -248,7 +259,8 @@ function createIsland() {
   island.loadFile(path.join(here, "ui/island.html"));
   island.once("ready-to-show", () => island.showInactive());
   island.webContents.on("did-finish-load", () => {
-    if (takenKeys.length) setIsland("done", `${takenKeys.map(keyLabel).join(", ")} is used by another app`);
+    const taken = takenHotkeys();
+    if (taken.length) setIsland("done", `${taken.map((n) => keyLabel(hotkey(n))).join(", ")} is used by another app: change it in Settings`);
     else setIsland("idle");
     if (tasks) island.webContents.send("tasks", tasks.list());
   });
@@ -291,7 +303,8 @@ const keyLabel = (accel) => accel.replace("Control", "Ctrl").replace("CommandOrC
 
 function setIsland(state, text) {
   islandState = state;
-  if (island && !island.isDestroyed()) island.webContents.send("island", { state, text, hotkey: keyLabel(HOTKEY), talkKey: keyLabel(TALK_HOTKEY) });
+  islandText = text;
+  if (island && !island.isDestroyed()) island.webContents.send("island", { state, text, hotkey: keyLabel(hotkey("ask")), talkKey: keyLabel(hotkey("talk")) });
 }
 
 // The island when nothing is running: speaking while Buddy still talks, active while the bubble is open, else idle.
@@ -722,6 +735,7 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
   lastAskAt = Date.now();
   explainerShown = false;
   spokenTurn = !!opts?.spoken;
+  spokenLang = spokenTurn ? heardLang : "en";
   voice?.hush();
   releaseFocus();
   setIsland("busy", "Thinking…");
@@ -729,7 +743,7 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
   try {
     const withMarks = pendingMarks;
     pendingMarks = null;
-    const how = { spoken: spokenTurn };
+    const how = { spoken: spokenTurn, lang: spokenLang };
     reply = withMarks ? await brain.askWithMarks(text, withMarks, how) : await brain.ask(text, target, how);
   } catch (err) {
     setIsland("done", "Something broke");
@@ -777,6 +791,7 @@ ipcMain.on("island-hover", (_e, inside) => {
 ipcMain.on("island-action", (_e, action) => {
   const [verb, id] = String(action).split(":");
   if (verb === "ask") summon();
+  else if (verb === "settings") settingsWindow.open();
   else if (verb === "mark") startMarking();
   else if (verb === "talk") talk();
   else if (verb === "hush") voice?.hush();
@@ -839,8 +854,7 @@ function guidePoint(bounds, caption) {
 // ---------- Voice: talk to Buddy, and hear it talk back ----------
 
 // Talk back: "spoken" (answer aloud when you spoke), "always", or "never".
-const talkBackMode = () => readSettings().talkBack ?? "spoken";
-const talksBack = (spoken) => !!voice && (talkBackMode() === "always" || (talkBackMode() === "spoken" && spoken));
+const talksBack = (spoken) => !!voice && (settings.talkBack === "always" || (settings.talkBack === "spoken" && spoken));
 
 const HEARD_ERRORS = {
   silence: "Didn't hear anything",
@@ -862,7 +876,8 @@ async function talk() {
   else await summon();
   bubble.webContents.send("listening", true);
   setIsland("listening", "Listening…");
-  const { text, error } = await voice.listen();
+  const { text, error, lang } = await voice.listen();
+  heardLang = lang ?? "en";
   bubble.webContents.send("listening", false);
   // Something else took over meanwhile (they typed the question instead): leave it be.
   if (currentMode() !== "listening") return;
@@ -870,6 +885,58 @@ async function talk() {
   if (text) return bubble.webContents.send("voice-text", text);
   if (error === "cancelled") return restIsland();
   setIsland("done", HEARD_ERRORS[error] ?? `Couldn't hear you: ${error}`);
+}
+
+// ---------- Dictation: say it, and it's typed where you are ----------
+
+// The dictation key: start; pressed again, stop (and type what's left). It needs no API key: nothing leaves the PC.
+async function dictate() {
+  if (!voice) return;
+  if (mode === "dictating") return voice.finishListening();
+  const wasSpeaking = voice.speaking;
+  voice.hush();
+  if (mode !== "idle") return wasSpeaking || setIsland(islandState, BUSY[mode]);
+  enter("dictating");
+  const continuous = settings.dictateStop === "press";
+  const key = keyLabel(hotkey("dictate"));
+  setIsland("listening", continuous ? `Dictating… ${key} to stop` : "Dictating… pause when you're done");
+  let words = 0;
+  const result = await voice.dictate({
+    continuous,
+    onText: async (text) => {
+      await typeText(words ? ` ${text}` : text);
+      words += text.split(/\s+/).filter(Boolean).length;
+      if (continuous && currentMode() === "dictating") setIsland("listening", `Dictating… ${words} words · ${key} to stop`);
+    },
+  });
+  enter("idle");
+  if (result.pieces) setIsland("done", `Typed ${words} word${words === 1 ? "" : "s"}`);
+  else if (result.error === "cancelled") restIsland();
+  else setIsland("done", HEARD_ERRORS[result.error] ?? `Couldn't hear you: ${result.error}`);
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Types dictated text into whatever app has the keyboard: through the clipboard and one paste (Ctrl+V), the way
+// dictation tools on Windows do, then puts back what the clipboard held. The paste is the user's own doing, so its
+// slip comes from approvals.dictationPaste(), which can only ever paste. It takes its turn with agents' actions.
+async function typeText(text) {
+  // Electron 45's clipboard is asynchronous and W3C-shaped. Every format on it is copied out first (an item read from
+  // the clipboard can still point at it, and the dictated text is about to replace what's there).
+  const saved = [];
+  for (const item of await clipboard.read().catch(() => [])) {
+    const parts = {};
+    for (const type of item.types) parts[type] = await item.getType(type).catch(() => null);
+    const kept = Object.fromEntries(Object.entries(parts).filter(([, v]) => v != null));
+    if (Object.keys(kept).length) saved.push(new ClipboardItem(kept));
+  }
+  await clipboard.writeText(text);
+  const res = await takeTurn(() => perform(dictationPaste()));
+  if ("error" in res) trace({ kind: "dictation-paste-failed", error: res.error.code });
+  await wait(300); // the app reads the clipboard as it pastes; give it a moment before the old contents go back
+  if ((await clipboard.readText()) !== text) return; // the user copied something meanwhile: keep theirs
+  if (saved.length) await clipboard.write(saved);
+  else clipboard.clear();
 }
 
 // Reads a reply aloud; the island shows it while Buddy speaks.
@@ -897,6 +964,10 @@ function startVoice() {
   voice = createVoice({
     here,
     cacheDir: process.env.BUDDY_MODELS_DIR ?? path.join(app.getPath("userData"), "models"),
+    // BUDDY_VOICE (0-9) overrides the voice chosen in Settings.
+    // Spoken replies use the language the question was asked in.
+    getVoice: () => ({ sid: process.env.BUDDY_VOICE ? Number(process.env.BUDDY_VOICE) : settings.voice, speed: settings.speed, lang: spokenTurn ? spokenLang : "en" }),
+    getLanguage: () => settings.language,
     onState: onVoiceState,
     onLevel: (level) => island?.isDestroyed() || island?.webContents.send("voice-level", level),
     trace,
@@ -994,15 +1065,6 @@ const pretty = (accel) => accel.replaceAll("+", " + ");
 
 // Run as `electron <app dir>`, so every launcher passes the app directory to the Electron binary.
 const LAUNCH = { path: process.execPath, args: [app.getAppPath()] };
-const settingsFile = () => path.join(app.getPath("userData"), "settings.json");
-const readSettings = () => {
-  try {
-    return JSON.parse(fs.readFileSync(settingsFile(), "utf8"));
-  } catch {
-    return {};
-  }
-};
-const writeSettings = (patch) => fs.writeFileSync(settingsFile(), JSON.stringify({ ...readSettings(), ...patch }, null, 2));
 
 const startsWithWindows = () => app.getLoginItemSettings(LAUNCH).openAtLogin;
 const setStartsWithWindows = (on) => app.setLoginItemSettings({ openAtLogin: on, ...LAUNCH });
@@ -1014,7 +1076,7 @@ function writeShortcuts() {
     icon: ICON,
     iconIndex: 0,
     appUserModelId: APP_ID,
-    description: `Desktop Buddy: ask about anything on your screen (${keyLabel(HOTKEY)})`,
+    description: `Desktop Buddy: ask about anything on your screen (${keyLabel(hotkey("ask"))})`,
   };
   const startMenu = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", "Desktop Buddy.lnk");
   const desktop = path.join(app.getPath("desktop"), "Desktop Buddy.lnk");
@@ -1026,75 +1088,287 @@ function writeShortcuts() {
   });
 }
 
-// Once per install: put Buddy in Start and on the desktop, and start it at sign-in. Later the tray owns both.
+// Once per install: put Buddy in Start and on the desktop, and start it at sign-in. Later Settings owns both.
 function firstRunSetup() {
-  if (process.platform !== "win32" || readSettings().launchSetupDone) return;
+  if (process.platform !== "win32" || settings.launchSetupDone) return;
   writeShortcuts();
   setStartsWithWindows(true);
-  writeSettings({ launchSetupDone: true });
+  changeSettings({ launchSetupDone: true });
 }
+
+// ---------- Settings: stored in settings.js, applied here the moment they change ----------
+
+const settingsFile = () => path.join(app.getPath("userData"), "settings.json");
+
+/**
+ * Applies a change from the Settings window (or the tray). Shortcuts are tried before they're kept: one another app
+ * already owns is refused and reported, and the old one stays. Returns the reason each refused field was refused.
+ * @param {any} patch
+ * @returns {Record<string, string>}
+ */
+function changeSettings(patch) {
+  const before = settings;
+  const { settings: next, rejected } = updateSettings(settings, patch);
+  /** @type {Record<string, string>} */
+  const problems = {};
+  for (const field of rejected) {
+    const name = field.startsWith("hotkeys.") ? field.slice(8) : null;
+    const clash = name && HOTKEY_NAMES.find((other) => other !== name && next.hotkeys[other] === patch.hotkeys?.[name]);
+    problems[field] = clash ? `Already used for ${HOTKEY_LABELS[clash]}` : "That value isn't allowed";
+  }
+  for (const name of HOTKEY_NAMES) {
+    const accel = next.hotkeys[name];
+    if (accel === before.hotkeys[name] || ENV_HOTKEYS[name]) continue;
+    if (!hotkeyIsFree(accel)) {
+      next.hotkeys[name] = before.hotkeys[name];
+      problems[`hotkeys.${name}`] = "Another app already uses this shortcut";
+    }
+  }
+  settings = next;
+  saveSettings(settingsFile(), settings);
+  if (!hotkeysSuspended && JSON.stringify(next.hotkeys) !== JSON.stringify(before.hotkeys)) registerHotkeys();
+  if (next.accent !== before.accent) paintAccentEverywhere();
+  if (next.appearance !== before.appearance) applyAppearance();
+  if (next.model !== before.model || next.effort !== before.effort) setBrainDefaults(settings);
+  setAgentPolicy(settings);
+  if (next.language !== before.language) voice?.prepare();
+  if (next.talkBack === "never" && before.talkBack !== "never") voice?.hush();
+  buildTrayMenu();
+  setIsland(islandState, islandText);
+  settingsWindow?.refresh();
+  return problems;
+}
+
+function applyAppearance() {
+  nativeTheme.themeSource = /** @type {"system" | "light" | "dark"} */ (process.env.BUDDY_THEME ?? settings.appearance);
+}
+
+// The accent colour reaches every Buddy window as one CSS variable (--buddy) that each page draws its accents from.
+// Explainer plates keep their own palette: they live in a separate session and are never painted.
+const accentCss = new WeakMap(); // webContents -> key of the CSS inserted into it
+async function paintAccent(wc) {
+  if (wc.isDestroyed() || wc.session !== session.defaultSession) return;
+  const old = accentCss.get(wc);
+  const key = await wc.insertCSS(`:root { --buddy: ${ACCENTS[settings.accent].hex} !important; }`);
+  accentCss.set(wc, key);
+  if (old) wc.removeInsertedCSS(old).catch(() => {});
+}
+const paintAccentEverywhere = () => {
+  for (const wc of webContents.getAllWebContents()) paintAccent(wc).catch(() => {});
+};
+app.on("web-contents-created", (_e, wc) => wc.on("did-finish-load", () => paintAccent(wc).catch(() => {})));
+
+// ---------- Global shortcuts ----------
+
+const HOTKEY_LABELS = { ask: "Ask", talk: "Talk", mark: "Mark", explain: "Explain", dictate: "Dictate" };
+const HOTKEY_ACTIONS = { ask: () => toggle(), talk: () => talk(), mark: () => startMarking(), explain: () => explainAt(cursor()), dictate: () => dictate() };
+/** @param {import("./settings.js").HotkeyName} name */
+const hotkey = (name) => ENV_HOTKEYS[name] ?? settings.hotkeys[name];
+const held = new Map(); // shortcut name -> the accelerator Buddy holds for it
+let hotkeysSuspended = false;
+
+// Another app may already own a shortcut; Windows gives it to whoever registered first.
+function hotkeyIsFree(accel) {
+  if ([...held.values()].includes(accel)) return true;
+  if (!globalShortcut.register(accel, () => {})) return false;
+  globalShortcut.unregister(accel);
+  return true;
+}
+
+function registerHotkeys() {
+  for (const accel of held.values()) globalShortcut.unregister(accel);
+  held.clear();
+  for (const name of HOTKEY_NAMES) {
+    const accel = hotkey(name);
+    if (globalShortcut.register(accel, HOTKEY_ACTIONS[name])) held.set(name, accel);
+    else console.error(`Could not register ${accel}`);
+  }
+}
+
+// While the Settings window records a new shortcut, Buddy lets go of its own, so pressing one of them is recorded
+// instead of opening the bubble or the mic.
+function suspendHotkeys(on) {
+  hotkeysSuspended = on;
+  if (on) {
+    for (const accel of held.values()) globalShortcut.unregister(accel);
+    held.clear();
+  } else registerHotkeys();
+}
+
+/** Shortcuts Buddy couldn't take because another app owns them. */
+const takenHotkeys = () => (hotkeysSuspended ? [] : HOTKEY_NAMES.filter((n) => !held.has(n)));
+
+// ---------- Tray ----------
 
 function createTray() {
   tray = new Tray(trayIcon());
-  tray.setToolTip(`Desktop Buddy — ask: ${pretty(HOTKEY)} · mark or explain: ${pretty(MARK_HOTKEY)}`);
+  tray.on("click", () => summon());
+  buildTrayMenu();
+}
+
+function buildTrayMenu() {
+  if (!tray) return;
+  tray.setToolTip(`Desktop Buddy — ask: ${pretty(keyLabel(hotkey("ask")))} · talk: ${pretty(keyLabel(hotkey("talk")))}`);
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: `Ask Buddy  (${HOTKEY})`, click: () => summon() },
-      { label: `Mark or explain something  (${MARK_HOTKEY})`, click: startMarking },
+      { label: `Ask Buddy  (${keyLabel(hotkey("ask"))})`, click: () => summon() },
+      { label: `Talk to Buddy  (${keyLabel(hotkey("talk"))})`, click: () => talk() },
+      { label: `Mark or explain something  (${keyLabel(hotkey("mark"))})`, click: () => startMarking() },
       { label: "New conversation", click: () => brain?.reset() },
       { label: "New task window", click: () => newTask() },
-      { label: `Talk to Buddy  (${TALK_HOTKEY})`, click: () => talk() },
-      {
-        label: "Talk back",
-        submenu: [
-          ["spoken", "When I speak"],
-          ["always", "Always"],
-          ["never", "Never"],
-        ].map(([mode, label]) => ({
-          label,
-          type: "radio",
-          checked: talkBackMode() === mode,
-          click: () => {
-            writeSettings({ talkBack: mode });
-            if (mode === "never") voice?.hush();
-          },
-        })),
-      },
-      {
-        label: "Start with Windows",
-        type: "checkbox",
-        checked: process.platform === "win32" && startsWithWindows(),
-        visible: process.platform === "win32",
-        click: (item) => setStartsWithWindows(item.checked),
-      },
+      { type: "separator" },
+      { label: "Settings…", click: () => settingsWindow.open() },
       { label: "Recreate shortcuts", visible: process.platform === "win32", click: writeShortcuts },
-      {
-        label: "Change API key…",
-        click: () => {
-          brain = null;
-          summon();
-        },
-      },
       { type: "separator" },
       { label: `agent-desktop: ${path.basename(resolveBinary())}`, enabled: false },
       { label: "Quit", click: () => app.quit() },
     ]),
   );
-  tray.on("click", () => summon());
 }
 
-// Another app may already own a shortcut; Windows gives it to whoever registered first. Say so on the island.
-const takenKeys = [];
-function registerKey(accel, fn) {
-  if (globalShortcut.register(accel, fn)) return;
-  console.error(`Could not register ${accel}`);
-  takenKeys.push(accel);
+// ---------- The Settings window ----------
+
+const PREVIEW_LINE = "Hi, I'm Buddy. Click the Formulas tab, and I'll show you the next step.";
+const ANTHROPIC_KEY = /^sk-ant-[A-Za-z0-9_-]{20,}$/;
+const explainersDir = () => path.join(app.getPath("userData"), "explainers");
+const timingLog = () => path.join(app.getPath("userData"), "timing.log");
+
+// What the Settings page shows. The API key itself never leaves this process: the page only learns whether one is saved.
+function settingsState() {
+  let explainers = 0;
+  let logBytes = 0;
+  try {
+    explainers = fs.readdirSync(explainersDir()).filter((f) => f.endsWith(".html")).length;
+  } catch {}
+  try {
+    logBytes = fs.statSync(timingLog()).size;
+  } catch {}
+  return {
+    settings,
+    accents: ACCENTS,
+    models: MODELS,
+    efforts: EFFORTS,
+    voices: VOICES,
+    speed: SPEED,
+    defaultHotkeys: DEFAULTS.hotkeys,
+    labels: HOTKEY_LABELS,
+    // Set by environment variables, which win over Settings; the page shows these as fixed.
+    fixed: {
+      hotkeys: HOTKEY_NAMES.filter((n) => ENV_HOTKEYS[n]),
+      voice: !!process.env.BUDDY_VOICE,
+      model: !!process.env.BUDDY_MODEL,
+      effort: !!process.env.BUDDY_EFFORT,
+      appearance: !!process.env.BUDDY_THEME,
+    },
+    taken: takenHotkeys(),
+    key: { saved: fs.existsSync(keyFile()), fromEnv: !!process.env.ANTHROPIC_API_KEY },
+    startsWithWindows: process.platform === "win32" && startsWithWindows(),
+    data: { explainers, logBytes },
+    routineInfo: Object.fromEntries(
+      settings.routines.map((r) => [
+        r.id,
+        { schedule: describeSchedule(r.schedule), next: r.enabled ? nextRun(r.schedule, new Date()).toISOString() : null, status: routineStatus.get(r.id) ?? null },
+      ]),
+    ),
+  };
 }
+
+// ---------- Routines: tasks Buddy starts on a schedule (routines.js says when) ----------
+
+const ROUTINE_CHECK_MS = 30_000;
+const routineWatched = new Map(); // routine id -> when Buddy started watching it (switched on, or Buddy started)
+const routineStatus = new Map(); // routine id -> what happened last, for Settings
+
+const markRoutine = (id, patch) => changeSettings({ routines: settings.routines.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+
+// Starts a routine as a task tucked into the island. It isn't about whatever window happens to be in front, and it
+// acts under the Agents rules like any task: anything they don't allow waits on its approval card.
+async function runRoutine(r, why) {
+  markRoutine(r.id, { lastRun: new Date().toISOString() }); // first, so a slow start can't run it twice
+  const result = await tasks.create({ title: r.name, prompt: r.prompt, target: null, tucked: true });
+  routineStatus.set(r.id, result.error ? `Couldn't start: ${result.error}` : why === "now" ? "Started just now" : "Started on schedule");
+  trace({ kind: "routine", id: r.id, why, error: result.error });
+  return result;
+}
+
+function checkRoutines() {
+  const now = new Date();
+  for (const r of settings.routines) {
+    if (!r.enabled) {
+      routineWatched.delete(r.id);
+      continue;
+    }
+    if (!routineWatched.has(r.id)) routineWatched.set(r.id, now);
+    const since = r.lastRun ? new Date(r.lastRun) : routineWatched.get(r.id);
+    const v = routineVerdict(r, since, now);
+    if (v === "run") runRoutine(r, "schedule");
+    else if (v === "skip") {
+      routineStatus.set(r.id, "Skipped a run missed while Buddy wasn't running");
+      markRoutine(r.id, { lastRun: now.toISOString() });
+    }
+  }
+}
+
+// ---------- Request a feature: a pre-filled GitHub issue, opened in the browser for the user to edit and send ----------
+
+const ISSUES = "https://github.com/donlapidos/agent-desktop/issues/new";
+function requestFeature() {
+  const body = [
+    "**What would you like Buddy to do?**",
+    "",
+    "",
+    "**How would it help you?**",
+    "",
+    "",
+    "---",
+    `Desktop Buddy ${app.getVersion()} · Windows ${os.release()}`,
+  ].join("\n");
+  shell.openExternal(`${ISSUES}?${new URLSearchParams({ title: "Feature request: ", body, labels: "buddy" })}`);
+}
+
+const settingsWindow = createSettingsWindow({
+  here,
+  icon: ICON,
+  state: settingsState,
+  change: changeSettings,
+  capture: suspendHotkeys,
+  preview: (sid, speed) => voice?.say(PREVIEW_LINE, { sid: Math.min(VOICES - 1, Math.max(0, Math.trunc(sid) || 0)), speed: Math.min(SPEED.max, Math.max(SPEED.min, speed || 1)) }),
+  setKey: (key) => {
+    const k = key.trim();
+    if (!ANTHROPIC_KEY.test(k)) return "That doesn't look like an Anthropic API key. They start with sk-ant-.";
+    saveApiKey(k);
+    startBrain();
+    return null;
+  },
+  removeKey: () => {
+    fs.rmSync(keyFile(), { force: true });
+    if (!process.env.ANTHROPIC_API_KEY) brain = null;
+  },
+  setStartup: (on) => process.platform === "win32" && setStartsWithWindows(on),
+  clear: (what) => {
+    if (what === "log") return fs.rmSync(timingLog(), { force: true });
+    for (const f of fs.readdirSync(explainersDir()).filter((x) => x.endsWith(".html"))) fs.rmSync(path.join(explainersDir(), f), { force: true });
+  },
+  openData: () => shell.openPath(app.getPath("userData")),
+  runRoutine: (id) => {
+    const r = settings.routines.find((x) => x.id === id);
+    return r ? runRoutine(r, "now").then((res) => res.error ?? null) : Promise.resolve("That routine no longer exists.");
+  },
+  // Apps with a window open now, as suggestions for the Agents lists.
+  apps: async () => [...new Set((await listWindows()).map((w) => w.app_name).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+  requestFeature,
+});
+ipcMain.on("open-settings", () => settingsWindow.open());
 
 app.whenReady().then(() => {
-  if (process.env.BUDDY_THEME) nativeTheme.themeSource = /** @type {"light" | "dark"} */ (process.env.BUDDY_THEME);
+  const loaded = loadSettings(settingsFile());
+  settings = loaded.settings;
+  if (loaded.recovered) trace({ kind: "settings-recovered", note: "settings.json couldn't be read; kept as settings.json.bad" });
+  applyAppearance();
+  setBrainDefaults(settings);
+  setAgentPolicy(settings);
   app.setAppUserModelId(APP_ID);
-  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_THEME;
+  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_SETTINGS_TEST || process.env.BUDDY_THEME;
   if (!devRun) firstRunSetup();
   lockExplainerSession();
   clearOldSessions();
@@ -1105,6 +1379,8 @@ app.whenReady().then(() => {
   createTray();
   startTasks();
   startVoice();
+  setTimeout(checkRoutines, 10_000);
+  setInterval(checkRoutines, ROUTINE_CHECK_MS);
   trackCursor();
   setInterval(keepIsland, 1500);
   const displaysChanged = () => {
@@ -1114,10 +1390,7 @@ app.whenReady().then(() => {
   screen.on("display-added", displaysChanged);
   screen.on("display-removed", displaysChanged);
   screen.on("display-metrics-changed", displaysChanged);
-  registerKey(HOTKEY, toggle);
-  registerKey(MARK_HOTKEY, startMarking);
-  registerKey(EXPLAIN_HOTKEY, () => explainAt(cursor()));
-  registerKey(TALK_HOTKEY, talk);
+  registerHotkeys();
   if (process.env.BUDDY_POINT_TEST) {
     // Dev check for coordinate mapping: BUDDY_POINT_TEST='{"x":..,"y":..,"width":..,"height":..}' (physical px)
     setTimeout(() => point(JSON.parse(process.env.BUDDY_POINT_TEST), "Is this the right spot?"), 2500);
@@ -1235,6 +1508,85 @@ app.whenReady().then(() => {
       if (process.env.BUDDY_VOICE_TEST_MIC) console.log("VOICE_MIC", JSON.stringify(await voice.listen()));
       console.log("VOICE_TEST_DONE");
     }, 1500);
+  } else if (process.env.BUDDY_SETTINGS_TEST) {
+    // Dev check for Settings: BUDDY_SETTINGS_TEST=<dir> captures each section of the window there, then checks that
+    // changes reach the rest of Buddy (the island's colour, the registered shortcuts, the file) and that a clash is
+    // refused.
+    const out = process.env.BUDDY_SETTINGS_TEST;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    setTimeout(async () => {
+      settingsWindow.open();
+      await wait(1500);
+      const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith("settings.html"));
+      const shoot = async (page, name) => {
+        await win.webContents.executeJavaScript(`show(${JSON.stringify(page)})`);
+        await wait(400);
+        fs.writeFileSync(path.join(out, `${name}.png`), (await win.webContents.capturePage()).toPNG());
+      };
+      for (const page of ["voice", "look", "keys", "claude"]) await shoot(page, `settings-${page}`);
+      await win.webContents.executeJavaScript(`document.querySelector("main").scrollTop = 9999`);
+      await wait(300);
+      fs.writeFileSync(path.join(out, "settings-claude-bottom.png"), (await win.webContents.capturePage()).toPNG());
+      const problems = changeSettings({ accent: "coral", voice: 3, speed: 1.15, hotkeys: { ask: "Control+Alt+K" } });
+      await wait(800);
+      const accentOf = (wc) => wc.executeJavaScript(`getComputedStyle(document.documentElement).getPropertyValue("--buddy").trim()`);
+      console.log("SETTINGS_APPLIED", JSON.stringify({
+        problems,
+        island: await accentOf(island.webContents),
+        bubble: await accentOf(bubble.webContents),
+        settingsPage: await accentOf(win.webContents),
+        newAskHeld: globalShortcut.isRegistered("Control+Alt+K"),
+        oldAskReleased: !globalShortcut.isRegistered("Control+Alt+B"),
+        file: JSON.parse(fs.readFileSync(settingsFile(), "utf8")),
+      }));
+      console.log("SETTINGS_CLASH", JSON.stringify(changeSettings({ hotkeys: { talk: "Control+Alt+K" } })));
+      // Agents: the policy reaches every Brain.
+      changeSettings({ rope: "trusted", trustedApps: ["Notepad"] });
+      const { decide } = await import("./policy.js");
+      console.log("SETTINGS_POLICY", JSON.stringify({
+        notepadType: decide(settings, { kind: "type", app: "notepad.exe" }),
+        wordType: decide(settings, { kind: "type", app: "WINWORD.EXE" }),
+        keepass: decide(settings, { kind: "scroll_to", app: "KeePass.exe" }),
+      }));
+      // Routines: one saved, shown with its next run, and run now (no API key here, so it must say so, not call Claude).
+      changeSettings({ routines: [{ id: "rtest1", name: "Inbox check", prompt: "Summarise my unread email.", schedule: { every: "weekday", time: "09:00", days: [], hours: 4 } }] });
+      const started = await runRoutine(settings.routines[0], "now");
+      console.log("SETTINGS_ROUTINE", JSON.stringify({ info: settingsState().routineInfo.rtest1, started }));
+      // Dictation types through the clipboard into the focused app, then puts the clipboard back. The target is a window
+      // of Buddy's own, and the paste is skipped unless it really has the keyboard, so nothing lands in another app.
+      const pad = new BrowserWindow({ width: 420, height: 160, show: false, title: "Buddy dictation check", webPreferences: { sandbox: true } });
+      await pad.loadURL("data:text/html,<title>Buddy dictation check</title><textarea id=t autofocus style='width:100%;height:120px'></textarea>");
+      pad.show();
+      pad.focus();
+      await pad.webContents.executeJavaScript("document.getElementById('t').focus()");
+      await wait(500);
+      await clipboard.writeText("what the user had copied");
+      // Electron's isFocused() can say yes while Windows gives the keyboard to another app (a background app may not
+      // take focus), so ask Windows which window really has it, through agent-desktop.
+      const front = (await listWindows()).find((w) => w.is_focused);
+      if (front && ownPids().includes(front.pid) && front.title === "Buddy dictation check") {
+        await typeText("Hello from dictation.");
+        await wait(400);
+        console.log("SETTINGS_DICTATION", JSON.stringify({
+          typed: await pad.webContents.executeJavaScript("document.getElementById('t').value"),
+          clipboardRestored: (await clipboard.readText()) === "what the user had copied",
+        }));
+      } else console.log("SETTINGS_DICTATION", JSON.stringify({ skipped: "the test window didn't get the keyboard" }));
+      pad.destroy();
+      // Language: Spanish spoken by the voice, heard through Buddy's own speech process with detection on.
+      changeSettings({ language: "auto" });
+      voice.mute();
+      const clip = await voice.synthesize("Haz clic en la pestaña Fórmulas y luego elige Insertar función.", { lang: "es" });
+      const ratio = clip.rate / 16000;
+      const pcm = Float32Array.from({ length: Math.floor(clip.audio.length / ratio) }, (_, i) => clip.audio[Math.floor(i * ratio)]);
+      const t0 = Date.now();
+      console.log("SETTINGS_LANGUAGE", JSON.stringify({ ...(await voice.transcribe(pcm)), ms: Date.now() - t0 }));
+      for (const page of ["dictation", "agents", "routines"]) await shoot(page, `settings-${page}`);
+      await win.webContents.executeJavaScript(`render(${JSON.stringify(settingsState())})`);
+      await shoot("look", "settings-look-coral");
+      await shoot("keys", "settings-keys-changed");
+      console.log("SETTINGS_TEST_DONE");
+    }, 2500);
   } else if (process.env.BUDDY_EXPLAINER_TEST) {
     // Dev check for the explainer renderer: BUDDY_EXPLAINER_TEST=path/to/explainer.json (show_explainer input)
     openExplainer(JSON.parse(fs.readFileSync(process.env.BUDDY_EXPLAINER_TEST, "utf8")));

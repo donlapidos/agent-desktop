@@ -1,17 +1,22 @@
 // Permission slips. Anything that operates the user's computer (a click, keystrokes, opening an app, moving a window)
-// runs only through desktop.perform(), and perform() takes only a slip from this module. The one way to get a slip
-// is requestApproval(), which asks the user (or finds they said "Allow for this task"). Slips can't be forged (they
-// are checked against a private set, not by shape) and each one works once.
+// runs only through desktop.perform(), and perform() takes only a slip from this module. There are exactly two ways
+// to get one:
+//   requestApproval()  an agent's action. The Agents policy (policy.js) is consulted first: an app it blocks gets no
+//                      slip at all, an action it allows gets one without asking, and anything else only after the
+//                      user says yes on the approval card (or "Allow for this task").
+//   dictationPaste()   the user's own dictation: one Ctrl+V into the app they're typing in, and nothing else.
+// Slips can't be forged (they are checked against a private set, not by shape) and each one works once.
+import { decide } from "./policy.js";
 
 /**
- * One input action, as the agent-desktop CLI runs it.
- * @typedef {{ args: string[], headed: boolean, summary: string }} InputAction
+ * One input action, as the agent-desktop CLI runs it. `kind` and `app` are what the Agents policy judges.
+ * @typedef {{ kind: string, app?: string | null, args: string[], headed: boolean, summary: string }} InputAction
  */
 
 /** @typedef {{ readonly brand: unique symbol }} SlipBrand */
 
 /**
- * An approved input action. Only requestApproval() creates one.
+ * An approved input action. Only this module creates one.
  * @typedef {Readonly<InputAction> & SlipBrand} Approved
  */
 
@@ -25,14 +30,28 @@ const issued = new WeakSet();
 
 /**
  * How to ask. `standing` is the answer's "Allow for this task": once true, later requests in the same answer pass
- * unasked.
+ * unasked. `policy` is the user's Agents settings; without one, every action is asked about.
  * @typedef {{
  *   confirm: (summary: string, bounds: import("./geometry.js").PhysicalRect | null, note?: string) => Promise<Decision | string>,
  *   bounds?: import("./geometry.js").PhysicalRect | null,
  *   note?: string,
  *   standing: { allowed: boolean },
+ *   policy?: import("./policy.js").AgentPolicy,
  * }} Ask
  */
+
+/** @param {InputAction} action @returns {Approved} */
+function issue(action) {
+  const slip = /** @type {Approved} */ (/** @type {unknown} */ (Object.freeze({
+    kind: action.kind,
+    app: action.app ?? null,
+    args: Object.freeze([...action.args]),
+    headed: action.headed,
+    summary: action.summary,
+  })));
+  issued.add(slip);
+  return slip;
+}
 
 /**
  * Asks the user whether Buddy may do what `summary` says. For things that aren't input actions (writing a document);
@@ -49,17 +68,21 @@ export async function askUser(summary, { confirm, bounds = null, note, standing 
 }
 
 /**
- * Asks the user to approve `action`. Resolves the slip, or null when they said no.
+ * Gets a slip for an agent's `action`: refused when the policy blocks its app, issued unasked when the policy allows
+ * it, otherwise only if the user approves. Resolves the slip, or null.
  * @param {InputAction} action
  * @param {Ask} how
  * @returns {Promise<Approved | null>}
  */
 export async function requestApproval(action, how) {
-  if (!(await askUser(action.summary, how))) return null;
-  const slip = /** @type {Approved} */ (/** @type {unknown} */ (Object.freeze({ args: [...action.args], headed: action.headed, summary: action.summary })));
-  issued.add(slip);
-  return slip;
+  const verdict = how.policy ? decide(how.policy, action) : "ask";
+  if (verdict === "block") return null;
+  if (verdict === "ask" && !(await askUser(action.summary, how))) return null;
+  return issue(action);
 }
+
+/** The user pressed their dictation key and spoke: one paste of it into the app they're in. */
+export const dictationPaste = () => issue({ kind: "paste", app: null, args: ["press", "ctrl+v"], headed: true, summary: "Paste what you dictated" });
 
 /**
  * Uses up a slip: true the first time a real slip is redeemed, false for anything else.

@@ -20,7 +20,7 @@
   }
   #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--buddy); flex: none; box-shadow: 0 0 10px var(--buddy); transition: background .2s, box-shadow .2s; }
   /* Idle: Buddy is on but resting. Active: the bubble is open and listening. */
-  body[data-state="idle"] #dot { background: #4a6fae; box-shadow: none; }
+  body[data-state="idle"] #dot { background: color-mix(in srgb, var(--buddy) 45%, #3a3d44); box-shadow: none; }
   body[data-state="idle"] #label { color: #9aa1ad; }
   body[data-state="active"] #dot { box-shadow: 0 0 12px var(--buddy), 0 0 3px var(--buddy); }
   #hint { display: none; font: 10.5px "Schibsted Grotesk", sans-serif; color: #6f7682; white-space: nowrap; }
@@ -42,6 +42,8 @@
   @keyframes talk { 0%, 100% { height: 4px; } 50% { height: 13px; } }
   #label { flex: 1; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #d9dce2; }
   #actions { display: none; gap: 4px; }
+  button.icon { width: 26px; padding: 0; display: inline-grid; place-items: center; }
+  button.icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
   #pill.open { min-width: 400px; }
   /* While the chat is open the pill widens to the chat card (388px wide with padding), so the two read as one. */
   body.attached #pill { min-width: 360px; transition-duration: .32s; }
@@ -56,7 +58,7 @@
   .chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px 0 6px; border-radius: 11px; background: #1a1c21; color: #c9cdd4; font: 600 11.5px "Schibsted Grotesk", sans-serif; font-variant-numeric: tabular-nums; }
   .chip:hover, .chip.peeking { background: #2a2d34; }
   .chip.open { box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); color: #f2f3f5; }
-  .chip i { width: 7px; height: 7px; border-radius: 50%; background: #4a6fae; }
+  .chip i { width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--buddy) 45%, #3a3d44); }
   .chip[data-state="working"] i { background: var(--buddy); box-shadow: 0 0 8px var(--buddy); animation: breathe 1.1s ease-in-out infinite; }
   .chip[data-state="confirm"] i { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: breathe .8s ease-in-out infinite; }
   .chip[data-state="done"] i { background: var(--green); box-shadow: 0 0 8px var(--green); }
@@ -73,9 +75,9 @@
   #peek .shot { display: block; position: relative; width: 100%; height: auto; aspect-ratio: 420 / 560; max-height: 250px; border-radius: 10px; overflow: hidden; background: #15171b; cursor: pointer; padding: 0; }
   #peek .shot img { width: 100%; height: 100%; object-fit: cover; object-position: bottom; display: block; }
   #peek .shot img:not([src]) { visibility: hidden; }
-  #peek .shot:hover { box-shadow: inset 0 0 0 1px rgba(47,122,255,.6); background: #15171b; }
+  #peek .shot:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--buddy) 60%, transparent); background: #15171b; }
   #peek .meta { display: flex; align-items: center; gap: 7px; padding: 9px 4px 2px; }
-  #peek .meta i { width: 7px; height: 7px; border-radius: 50%; background: #4a6fae; flex: none; }
+  #peek .meta i { width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--buddy) 45%, #3a3d44); flex: none; }
   #peek[data-state="working"] .meta i { background: var(--buddy); box-shadow: 0 0 8px var(--buddy); }
   #peek[data-state="confirm"] .meta i { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
   #peek[data-state="done"] .meta i { background: var(--green); }
@@ -87,7 +89,7 @@
   #peek .row button { flex: none; }
   #peek .row .grow { flex: 1; }
   #peek .allow { background: var(--buddy); }
-  #peek .allow:hover { background: #4689ff; }
+  #peek .allow:hover { background: color-mix(in srgb, var(--buddy) 82%, white); }
   #peek .deny { color: #ff8a5c; }
   #peek .deny:hover { background: #2a2d34; }
   #peek .close { background: none; color: #8b919c; padding: 0 8px; }
@@ -109,6 +111,7 @@
       <button id="talk" title="Ctrl+Alt+T: say it instead of typing. Pause when you're done.">Talk</button>
       <button id="mark" title="Ctrl+Alt+M: click something to explain it, or draw over things to ask about them">Mark</button>
       <button id="task" title="Open a task window: an agent with its own conversation that works while you do other things">Task</button>
+      <button id="settings" class="icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h7M12.5 5H14M2 11h2M7.5 11H14"/><circle cx="10.75" cy="5" r="1.75"/><circle cx="5.75" cy="11" r="1.75"/></svg></button>
     </span>
   </div>
   <div id="peek">
@@ -155,6 +158,7 @@
   $("talk").addEventListener("click", () => act("talk"));
   $("mark").addEventListener("click", () => act("mark"));
   $("task").addEventListener("click", () => act("task"));
+  $("settings").addEventListener("click", () => act("settings"));
 
   const STATE_WORDS = { idle: "ready", working: "working", confirm: "needs your OK", done: "finished", error: "hit a problem" };
 

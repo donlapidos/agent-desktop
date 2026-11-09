@@ -78,3 +78,13 @@ test("observe runs only commands that look, never ones that act", async () => {
     assert.equal(res.ok === false && res.error.code, "NOT_READ_ONLY", cmd);
   }
 });
+
+test("the dictation slip can only ever paste, and only once", async () => {
+  const { dictationPaste } = await import("../src/approvals.js");
+  const slip = dictationPaste();
+  assert.deepEqual([...slip.args], ["press", "ctrl+v"]);
+  assert.equal(slip.kind, "paste");
+  assert.throws(() => slip.args.push("--app", "anything"), "its arguments can't be changed");
+  assert.equal(redeem(slip), true);
+  assert.equal(redeem(slip), false);
+});
