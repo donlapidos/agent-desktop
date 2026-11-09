@@ -980,6 +980,22 @@ function startVoice() {
   setTimeout(() => voice.prepare(), 4000);
 }
 
+// Buddy keeps an eye on its own CPU. Normal use measures at 2-3% of one core (an approval waiting, the pointer
+// following the mouse, a step being pointed at), yet one stuck session showed its GPU process at 38% and couldn't be
+// reproduced. So when a whole minute averages over CPU_HIGH percent, timing.log records which processes used it and
+// what Buddy was doing, and the next heavy moment can be found afterwards.
+const CPU_WATCH_MS = 60_000;
+const CPU_HIGH = Number(process.env.BUDDY_CPU_HIGH ?? 15); // percent of one core, all processes together; env for checks
+function watchCpu() {
+  app.getAppMetrics(); // starts the first minute's measurement
+  setInterval(() => {
+    const byType = {};
+    for (const m of app.getAppMetrics()) byType[m.type] = +((byType[m.type] ?? 0) + m.cpu.percentCPUUsage).toFixed(1);
+    const total = +Object.values(byType).reduce((a, b) => a + b, 0).toFixed(1);
+    if (total > CPU_HIGH) trace({ kind: "cpu-high", total, byType, mode, island: islandState, bubbleOpen: bubble.isVisible(), pointing: !!pointer.owner, tasks: tasks?.count() ?? 0 });
+  }, CPU_WATCH_MS);
+}
+
 // Timing log (userData/timing.log, JSON lines): how long each model call and tool took, to find slow steps.
 function trace(entry) {
   try {
@@ -1387,6 +1403,7 @@ app.whenReady().then(() => {
   setTimeout(checkRoutines, 10_000);
   setInterval(checkRoutines, ROUTINE_CHECK_MS);
   trackCursor();
+  watchCpu();
   setInterval(keepIsland, 1500);
   const displaysChanged = () => {
     createOverlays();
