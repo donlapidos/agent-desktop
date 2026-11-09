@@ -88,3 +88,13 @@ test("the dictation slip can only ever paste, and only once", async () => {
   assert.equal(redeem(slip), true);
   assert.equal(redeem(slip), false);
 });
+
+test("the focus slip can only focus the window the user was in", async () => {
+  const { returnFocus } = await import("../src/approvals.js");
+  const slip = returnFocus({ app_name: "EXCEL.EXE", id: "w-1234" });
+  assert.deepEqual([...slip.args], ["focus-window", "--app", "EXCEL.EXE", "--window-id", "w-1234"]);
+  assert.equal(slip.kind, "focus");
+  assert.throws(() => slip.args.splice(0, 1, "click"), "its arguments can't be changed");
+  assert.equal(redeem(slip), true);
+  assert.equal(redeem(slip), false);
+});

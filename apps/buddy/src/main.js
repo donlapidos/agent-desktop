@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Brain, SESSION_PREFIX, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
-import { dictationPaste } from "./approvals.js";
+import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
 import { createTasks } from "./tasks.js";
@@ -364,7 +364,6 @@ function showBubble({ focus = true } = {}) {
   clearTimeout(bubbleHideTimer);
   if (!bubble.isVisible()) placeBubble();
   if (focus) {
-    bubble.setFocusable(true);
     bubble.show();
     bubble.focus();
   } else {
@@ -387,6 +386,7 @@ function hideBubble({ now = false } = {}) {
   else bubbleHideTimer = setTimeout(() => bubble.hide(), BUBBLE_FOLD_MS);
 }
 
+
 // The main hotkey switches Buddy between idle and active: it opens the bubble, or closes it if it's open.
 function toggle() {
   if (bubble.isVisible() && (mode === "idle" || mode === "listening")) {
@@ -397,9 +397,14 @@ function toggle() {
 }
 
 // Hand focus back to the user's app while we work, so keyboard actions land there.
+// It only steps back (blur): it never switches itself to "can't take focus". On Windows, setFocusable(false) on a
+// bubble that has been hidden and shown again leaves it deaf to every click, so an approval card or Stop can't be
+// pressed (reproduced with real clicks). Clicking the card activates the bubble, so answering it hands the keyboard
+// back again (answerApproval).
 function releaseFocus() {
-  bubble.setFocusable(false);
   bubble.blur();
+  // Stepping back doesn't give the keyboard to another app on Windows, so hand it to the window the user was in.
+  if (target) takeTurn(() => perform(returnFocus(target))).catch(() => {});
 }
 
 async function summon() {
@@ -750,7 +755,6 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
     return { reply: `Something broke: ${err.message}` };
   } finally {
     enter("idle");
-    bubble.setFocusable(true);
     releaseLater("bubble");
   }
   setIsland("done", oneLine(reply));
@@ -838,6 +842,7 @@ function answerApproval(decision) {
   approval = null;
   if (!resolve) return;
   resolve(decision);
+  releaseFocus(); // the click on the card activated the bubble; the user's app gets the keyboard back
   setIsland("busy", "Working…");
 }
 
@@ -1368,7 +1373,7 @@ app.whenReady().then(() => {
   setBrainDefaults(settings);
   setAgentPolicy(settings);
   app.setAppUserModelId(APP_ID);
-  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_SETTINGS_TEST || process.env.BUDDY_THEME;
+  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_SETTINGS_TEST || process.env.BUDDY_APPROVAL_TEST || process.env.BUDDY_THEME;
   if (!devRun) firstRunSetup();
   lockExplainerSession();
   clearOldSessions();
@@ -1508,6 +1513,60 @@ app.whenReady().then(() => {
       if (process.env.BUDDY_VOICE_TEST_MIC) console.log("VOICE_MIC", JSON.stringify(await voice.listen()));
       console.log("VOICE_TEST_DONE");
     }, 1500);
+  } else if (process.env.BUDDY_APPROVAL_TEST) {
+    // Dev check, with a REAL mouse click (the pointer moves; keep hands off the mouse): an approval card must take a
+    // click, and the keyboard must go back to the user's app afterwards. Cases:
+    //   plain    the card in a bubble opened once
+    //   guide    the bubble folds away while Buddy points at a step, then the card comes
+    //   cycle    the bubble is closed and opened again before asking (this left cards deaf to clicks)
+    //   twoasks  one answer guides, the bubble is opened again, and the next answer needs approval
+    // Run: BUDDY_APPROVAL_TEST=cycle npm start (it needs ANTHROPIC_API_KEY set to anything; Claude isn't called).
+    const kind = process.env.BUDDY_APPROVAL_TEST;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const step = asPhysicalRect({ x: 200, y: 300, width: 120, height: 40 });
+    setTimeout(async () => {
+      await summon();
+      await wait(800);
+      let answered = null;
+      const approve = async () => {
+        if (kind === "guide") {
+          await guidePoint(step, "Click here");
+          await wait(1500);
+        }
+        answered = await confirm('Create "Report" in Documents\\Buddy and open it in Word', null);
+        return "Done.";
+      };
+      brain = { reset() {}, cancel() {}, marks: new Map(), transcript: () => [], ask: approve };
+      if (kind === "cycle") {
+        toggle();
+        await wait(800);
+        toggle();
+        await wait(1200);
+      }
+      if (kind === "twoasks") {
+        brain.ask = async () => {
+          await guidePoint(step, "Click here");
+          await wait(1500);
+          brain.ask = approve;
+          return "Done guiding.";
+        };
+        await bubble.webContents.executeJavaScript(`window.buddy.ask("show me how", {})`);
+        await wait(7500);
+        toggle();
+        await wait(1200);
+      }
+      bubble.webContents.executeJavaScript(`window.buddy.ask("make a report", {})`);
+      await wait(4000);
+      const box = await bubble.webContents.executeJavaScript(`(() => { const r = document.querySelector('#confirm [data-d="allow"]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      const b = bubble.getContentBounds();
+      const at = screen.dipToScreenPoint({ x: Math.round(b.x + box.x), y: Math.round(b.y + box.y) });
+      const { execFileSync } = await import("node:child_process");
+      execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(here, "../scripts/real-click.ps1"), String(at.x), String(at.y)]);
+      await wait(1500);
+      const front = (await listWindows()).find((w) => w.is_focused);
+      console.log("APPROVAL_TEST", JSON.stringify({ kind, answered, keyboardBackInApp: !!front && !ownPids().includes(front.pid) }));
+      app.quit();
+    }, 2500);
   } else if (process.env.BUDDY_SETTINGS_TEST) {
     // Dev check for Settings: BUDDY_SETTINGS_TEST=<dir> captures each section of the window there, then checks that
     // changes reach the rest of Buddy (the island's colour, the registered shortcuts, the file) and that a clash is

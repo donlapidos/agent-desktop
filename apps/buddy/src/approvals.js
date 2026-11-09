@@ -5,6 +5,8 @@
 //                      slip at all, an action it allows gets one without asking, and anything else only after the
 //                      user says yes on the approval card (or "Allow for this task").
 //   dictationPaste()   the user's own dictation: one Ctrl+V into the app they're typing in, and nothing else.
+//   returnFocus()      giving the keyboard back to the window the user was working in when they called Buddy
+//                      (clicking Buddy's bubble takes it); it can only focus that one window.
 // Slips can't be forged (they are checked against a private set, not by shape) and each one works once.
 import { decide } from "./policy.js";
 
@@ -83,6 +85,14 @@ export async function requestApproval(action, how) {
 
 /** The user pressed their dictation key and spoke: one paste of it into the app they're in. */
 export const dictationPaste = () => issue({ kind: "paste", app: null, args: ["press", "ctrl+v"], headed: true, summary: "Paste what you dictated" });
+
+/**
+ * The keyboard goes back to the window the user was in (as Buddy recorded it when called, from list-windows): only
+ * focus-window, only for that window.
+ * @param {{ app_name: string, id: string }} win
+ */
+export const returnFocus = (win) =>
+  issue({ kind: "focus", app: win.app_name, args: ["focus-window", "--app", win.app_name, "--window-id", win.id], headed: true, summary: `Give the keyboard back to ${win.app_name}` });
 
 /**
  * Uses up a slip: true the first time a real slip is redeemed, false for anything else.

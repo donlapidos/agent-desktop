@@ -90,6 +90,12 @@ wording, history trimming, the mode table, the SVG sanitizer and escaping in exp
 text, and never overwriting a document. CI (`.github/workflows/buddy.yml`) runs `npm run check` and `npm test` on
 Windows for every change under `apps/buddy`.
 
+`BUDDY_APPROVAL_TEST=cycle npm start` checks, with a real mouse click (the pointer moves; keep your hands off the
+mouse), that an approval card takes a click and that the keyboard goes back to your app afterwards. Cases: `plain`,
+`guide`, `cycle` and `twoasks` (see `main.js`). It guards a Windows quirk: switching the bubble to "can't take focus"
+after it had been closed and reopened left it deaf to every click, so approval cards and Stop stopped working. The
+bubble now never switches; it steps back and hands the keyboard to your window instead.
+
 `npm run measure:idle` starts a separate copy of Buddy and reports its CPU use while idle, per process (keep the
 mouse still; add `-- -Budget 1.0` to fail above a limit). Buddy should sit near 1% of one core: the overlay draws
 only while the pointer moves, and the cursor check slows to 20 times a second once the mouse is still.
