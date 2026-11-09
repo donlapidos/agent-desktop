@@ -4,6 +4,14 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { redeem } from "./approvals.js";
+
+/** @typedef {import("./geometry.js").PhysicalPoint} PhysicalPoint */
+/** @typedef {import("./geometry.js").PhysicalRect} PhysicalRect */
+/**
+ * A window as agent-desktop lists it. Its bounds are physical pixels.
+ * @typedef {{ id: string, pid: number, app_name: string, title: string, is_focused?: boolean, minimized?: boolean, bounds?: PhysicalRect }} DesktopWindow
+ */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const exe = process.platform === "win32" ? "agent-desktop.exe" : "agent-desktop";
@@ -19,13 +27,54 @@ export function resolveBinary() {
 
 const BIN = resolveBinary();
 
-export function runDesktop(args, { timeoutMs = 30_000, headed = false, signal } = {}) {
+/**
+ * @typedef {{ ok: true, data?: any } | { ok: false, error: { code: string, message?: string, details?: any } }} Envelope
+ * @typedef {{ timeoutMs?: number, signal?: AbortSignal, session?: string }} RunOptions
+ */
+
+// Commands that only look. observe() runs these and nothing else; everything that operates the computer goes
+// through perform(), which needs a slip from approvals.js.
+const READ_ONLY = new Set(["version", "list-windows", "snapshot", "screenshot"]);
+
+/**
+ * Runs a read-only agent-desktop command.
+ * @param {string[]} args
+ * @param {RunOptions} [opts]
+ * @returns {Promise<Envelope>}
+ */
+export function observe(args, opts = {}) {
+  if (!READ_ONLY.has(args[0])) {
+    return Promise.resolve({ ok: false, error: { code: "NOT_READ_ONLY", message: `${args[0]} operates the computer; it needs an approval (perform).` } });
+  }
+  return run(args, opts);
+}
+
+/**
+ * Runs an approved input action, once.
+ * @param {import("./approvals.js").Approved} slip
+ * @param {RunOptions} [opts]
+ * @returns {Promise<Envelope>}
+ */
+export function perform(slip, opts = {}) {
+  if (!redeem(slip)) return Promise.resolve({ ok: false, error: { code: "NOT_APPROVED", message: "This action was not approved." } });
+  return run(slip.args, { ...opts, headed: slip.headed });
+}
+
+// `session` keeps an agent's snapshots in their own namespace: agent-desktop keeps only the newest 128 snapshots
+// per namespace, so agents sharing one would push each other's refs out.
+/**
+ * @param {string[]} args
+ * @param {RunOptions & { headed?: boolean }} opts
+ * @returns {Promise<Envelope>}
+ */
+function run(args, { timeoutMs = 30_000, headed = false, signal, session } = {}) {
   const argv = headed ? ["--headed", ...args] : args;
+  const env = session ? { ...process.env, AGENT_DESKTOP_SESSION: session } : undefined;
   return new Promise((resolve) => {
     execFile(
       BIN,
       argv,
-      { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true, signal },
+      { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true, signal, env },
       (err, stdout, stderr) => {
         try {
           resolve(JSON.parse(stdout));
@@ -44,22 +93,26 @@ export function runDesktop(args, { timeoutMs = 30_000, headed = false, signal } 
 }
 
 // The window the user was looking at, ignoring our own process.
+/** @param {number[]} [ownPids] @returns {Promise<DesktopWindow | null>} */
 export async function foregroundWindow(ownPids = []) {
-  const res = await runDesktop(["list-windows"], { timeoutMs: 8_000 });
+  const res = await observe(["list-windows"], { timeoutMs: 8_000 });
   if (!res.ok) return null;
   const windows = Array.isArray(res.data) ? res.data : res.data?.windows ?? [];
   return windows.find((w) => w.is_focused && !ownPids.includes(w.pid)) ?? null;
 }
 
+/** @returns {Promise<DesktopWindow[]>} */
 export async function listWindows() {
-  const res = await runDesktop(["list-windows"], { timeoutMs: 8_000 });
+  const res = await observe(["list-windows"], { timeoutMs: 8_000 });
   if (!res.ok) return [];
   return Array.isArray(res.data) ? res.data : res.data?.windows ?? [];
 }
 
+/** @param {PhysicalRect | undefined} b @param {PhysicalPoint} p */
 const contains = (b, p) => b && p.x >= b.x && p.y >= b.y && p.x < b.x + b.width && p.y < b.y + b.height;
 
 // The window under a physical screen point: the focused one if it covers the point, else any visible one that does.
+/** @param {PhysicalPoint} point @param {number[]} [ownPids] */
 export async function windowAt(point, ownPids = []) {
   const candidates = (await listWindows()).filter((w) => !ownPids.includes(w.pid) && !w.minimized && contains(w.bounds, point));
   return candidates.find((w) => w.is_focused) ?? candidates[0] ?? null;
@@ -67,14 +120,16 @@ export async function windowAt(point, ownPids = []) {
 
 // Describe the deepest accessible element under a physical screen point, with its ancestry,
 // so the model knows what the user is pointing at even when pixels are ambiguous.
+/** @param {DesktopWindow | null} win @param {PhysicalPoint} point */
 export async function elementAt(win, point) {
   return (await elementsAt(win, [point]))[0] ?? null;
 }
 
 // Same, for many points in one window, from a single snapshot (marker strokes sample several points each).
+/** @param {DesktopWindow | null} win @param {PhysicalPoint[]} points */
 export async function elementsAt(win, points) {
   if (!win) return points.map(() => null);
-  const res = await runDesktop(
+  const res = await observe(
     ["snapshot", "--app", win.app_name, "--window-id", win.id, "--include-bounds", "--max-depth", "25"],
     { timeoutMs: 12_000 },
   );
@@ -82,8 +137,10 @@ export async function elementsAt(win, points) {
   return points.map((point) => deepestAt(res.data.tree, point));
 }
 
+/** @param {any} tree @param {PhysicalPoint} point */
 function deepestAt(tree, point) {
   // Deepest containing node wins; among equals, the smallest (overlapping panes often share a point).
+  /** @type {{ node: any, path: string[] } | null} */
   let best = null;
   const area = (b) => b.width * b.height;
   const walk = (node, path) => {
@@ -103,6 +160,7 @@ function deepestAt(tree, point) {
 }
 
 // Group points by the window under each, so marks that span apps still resolve.
+/** @param {PhysicalPoint[]} points @param {number[]} [ownPids] @returns {Promise<(DesktopWindow | null)[]>} */
 export async function windowsAt(points, ownPids = []) {
   const windows = (await listWindows()).filter((w) => !ownPids.includes(w.pid) && !w.minimized);
   return points.map((p) => {
@@ -117,7 +175,14 @@ const INTERESTING_STATES = new Set([
 
 // Turn a snapshot tree into indented text for the model, and collect ref -> bounds
 // for the pointer. Bounds stay out of the model's context.
-export function renderTree(tree, bounds = new Map(), maxChars = 24_000) {
+// `labels`, when given, collects ref -> a plain name for the element ("Save" (button)) for approval cards.
+/**
+ * @param {any} tree
+ * @param {Map<string, PhysicalRect>} [bounds] ref -> where the element is, for the pointer
+ * @param {number} [maxChars]
+ * @param {Map<string, string> | null} [labels]
+ */
+export function renderTree(tree, bounds = new Map(), maxChars = 24_000, labels = null) {
   const lines = [];
   let used = 0;
   let clipped = false;
@@ -125,6 +190,7 @@ export function renderTree(tree, bounds = new Map(), maxChars = 24_000) {
   const walk = (node, depth) => {
     if (!node || clipped) return;
     if (node.ref_id && node.bounds) bounds.set(node.ref_id, node.bounds);
+    if (node.ref_id && labels) labels.set(node.ref_id, node.name ? `${JSON.stringify(String(node.name).slice(0, 60))} (${node.role ?? "control"})` : `the ${node.role ?? "control"}`);
     const parts = [];
     if (node.ref_id) parts.push(node.ref_id);
     parts.push(node.role ?? "?");
@@ -287,17 +353,17 @@ const hasText = (node, needle) =>
 // (and the window, which is a new one when the step opened a dialog), so the caller can go straight on.
 const windowTarget = (w) => ["--app", w.app_name, "--window-id", w.id];
 const WAIT_SNAPSHOT = ["-i", "--compact", "--include-bounds", "--max-depth", "25", "--timeout-ms", "3000"];
-export async function waitForText({ win, text, timeoutMs = 45_000, signal }) {
+export async function waitForText({ win, text, timeoutMs = 45_000, signal, session }) {
   const needle = String(text).toLowerCase().trim();
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     if (signal?.aborted) return { status: "cancelled" };
     const dialog = (await listWindows()).find((w) => w.pid === win.pid && w.title?.toLowerCase().includes(needle));
     if (dialog) {
-      const res = await snapshotResilient(windowTarget(dialog), WAIT_SNAPSHOT, { timeoutMs: 8_000, signal });
+      const res = await snapshotResilient(windowTarget(dialog), WAIT_SNAPSHOT, { timeoutMs: 8_000, signal, session });
       return { status: "appeared", window: dialog, snapshot: res.ok ? res.data : null };
     }
-    const res = await snapshotResilient(windowTarget(win), WAIT_SNAPSHOT, { timeoutMs: 8_000, signal });
+    const res = await snapshotResilient(windowTarget(win), WAIT_SNAPSHOT, { timeoutMs: 8_000, signal, session });
     if (res.ok && hasText(res.data.tree, needle)) return { status: "appeared", window: win, snapshot: res.data };
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -319,11 +385,11 @@ export async function snapshotResilient(target, extra, opts = {}) {
   const key = target.join(" ");
   const knownFaulty = Date.now() - (faultyWindows.get(key) ?? 0) < FAULT_MEMORY_MS;
   if (!knownFaulty) {
-    const res = await runDesktop(["snapshot", ...target, ...extra], opts);
+    const res = await observe(["snapshot", ...target, ...extra], opts);
     if (!isWalkFault(res)) return res;
     faultyWindows.set(key, Date.now());
   }
-  const skeleton = await runDesktop(["snapshot", ...target, "--skeleton", "--include-bounds"], opts);
+  const skeleton = await observe(["snapshot", ...target, "--skeleton", "--include-bounds"], opts);
   if (!skeleton.ok) return skeleton;
   // Regions run in parallel, which slows each one; a region read that runs out of time fails outright instead of
   // returning what it saw, so give them room. A caller's own depth and deadline win.
@@ -333,7 +399,7 @@ export async function snapshotResilient(target, extra, opts = {}) {
   let unreadable = 0;
   const graft = async (node) => {
     if (node.ref_id && node.children_count && !node.children?.length) {
-      const part = await runDesktop(["snapshot", "--root", node.ref_id, ...regionExtra], opts);
+      const part = await observe(["snapshot", "--root", node.ref_id, ...regionExtra], opts);
       if (part.ok) {
         node.children = part.data.tree.children ?? [];
         delete node.children_count;

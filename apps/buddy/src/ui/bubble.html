@@ -57,7 +57,9 @@
   .btn.deny { background: var(--field); color: var(--danger); font-weight: 500; }
   #confirm { display: none; flex-direction: column; gap: 8px; padding: 10px; border-radius: 12px; background: var(--field); }
   #confirm.on { display: flex; }
-  #confirm .what { font-weight: 600; }
+  #confirm .what { font-weight: 600; overflow-wrap: anywhere; }
+  #confirm .why { font-size: 12.5px; color: var(--muted); }
+  #confirm .why:empty { display: none; }
   #confirm .row { display: flex; gap: 6px; flex-wrap: wrap; }
   #marks { display: none; flex-wrap: wrap; gap: 6px; align-items: center; }
   #marks.on { display: flex; }
@@ -66,6 +68,12 @@
   .chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #marks .btn { padding: 4px 10px; font-size: 12.5px; }
   kbd { font: 500 11px "Schibsted Grotesk", sans-serif; padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line); }
+  /* Mic: say the question instead of typing it. While listening the button rings with the voice. */
+  #mic { width: 38px; padding: 0; display: grid; place-items: center; flex: none; }
+  #mic svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+  body.listening #mic { background: var(--buddy); color: #fff; animation: ring 1.3s ease-out infinite; }
+  @keyframes ring { 0% { box-shadow: 0 0 0 0 rgba(47,122,255,.55); } 100% { box-shadow: 0 0 0 9px rgba(47,122,255,0); } }
+  @media (prefers-reduced-motion: reduce) { body.listening #mic { animation: none; } }
 </style>
 </head>
 <body>
@@ -81,6 +89,7 @@
   <div id="reply"></div>
   <div id="confirm">
     <div>Can I do this? <span class="what" id="what"></span></div>
+    <div class="why" id="why"></div>
     <div class="row">
       <button class="btn" data-d="allow">Allow</button>
       <button class="btn ghost" data-d="always">Allow for this task</button>
@@ -89,6 +98,7 @@
   </div>
   <form id="form">
     <input id="input" autocomplete="off" spellcheck="false" placeholder="How do I…?  or  Do it for me">
+    <button class="btn ghost" id="mic" type="button" title="Say it (Ctrl+Alt+T). Pause when you're done."><svg viewBox="0 0 16 16"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2"/></svg></button>
     <button class="btn" type="submit">Ask</button>
   </form>
 </div>
@@ -154,23 +164,46 @@
   });
   window.buddy.onReply((text) => { show(text); $("where").textContent = "Buddy"; });
 
-  window.buddy.onConfirm(({ summary }) => {
+  // An approval takes a deliberate click: nothing on the card takes focus (a key meant for another app or the field
+  // must never land on Allow), and clicks in its first moments are ignored (a click already on its way doesn't count).
+  const ARM_MS = 500;
+  let confirmAt = 0;
+  window.buddy.onConfirm(({ summary, note }) => {
     $("what").textContent = summary;
+    $("why").textContent = note && note.toLowerCase() !== summary.toLowerCase() ? note : "";
     $("confirm").classList.add("on");
-    $("confirm").querySelector(".btn").focus();
+    confirmAt = performance.now();
   });
 
   $("confirm").addEventListener("pointerdown", (e) => console.log("TRACE press on approval: " + (e.target.dataset?.d || e.target.tagName) + " open=" + document.body.classList.contains("open")));
   $("confirm").addEventListener("click", (e) => {
     const d = e.target.dataset?.d;
-    if (!d) return;
+    if (!d || performance.now() - confirmAt < ARM_MS) return;
     $("confirm").classList.remove("on");
     window.buddy.confirmReply(d);
   });
 
+  // Voice: the main process listens and transcribes; the words land in the field and go like a typed question.
+  let listening = false, spoken = false;
+  window.buddy.onListening((on) => {
+    listening = on;
+    document.body.classList.toggle("listening", on);
+    if (on) show("Listening… pause when you're done.", true);
+    else if ($("reply").textContent.startsWith("Listening")) show("");
+  });
+  window.buddy.onVoiceText((text) => {
+    if (busy || needsKey) return;
+    $("input").value = text;
+    spoken = true;
+    $("form").requestSubmit();
+  });
+  $("mic").addEventListener("click", () => window.buddy.talk());
+
   $("form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = $("input").value.trim();
+    const wasSpoken = spoken;
+    spoken = false;
     if (!text || busy) return;
     $("input").value = "";
     if (needsKey) {
@@ -183,8 +216,8 @@
       return;
     }
     setBusy(true);
-    show("Thinking…", true);
-    const { reply } = await window.buddy.ask(text);
+    show(wasSpoken ? `“${text}”` : "Thinking…", true);
+    const { reply } = await window.buddy.ask(text, { spoken: wasSpoken });
     setBusy(false);
     show(reply);
     $("confirm").classList.remove("on");
@@ -195,7 +228,7 @@
   $("new").addEventListener("click", () => { window.buddy.reset(); show(""); $("input").focus(); });
   addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (busy) window.buddy.cancel(); else window.buddy.hide();
+    if (busy || listening) window.buddy.cancel(); else window.buddy.hide();
   });
 </script>
 </body>

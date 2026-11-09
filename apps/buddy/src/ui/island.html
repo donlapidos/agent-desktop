@@ -2,101 +2,233 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:">
 <style>
   @font-face { font-family: "Schibsted Grotesk"; src: url("fonts/schibsted-grotesk-var.woff2") format("woff2"); font-weight: 400 900; }
-  :root { --buddy: #2f7aff; --amber: #f5a524; --green: #22c55e; }
+  :root { --buddy: #2f7aff; --amber: #f5a524; --green: #22c55e; --ease: cubic-bezier(.2,.8,.2,1); }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font: 13px/1 "Schibsted Grotesk", "Segoe UI", sans-serif; user-select: none; }
   body { display: flex; justify-content: center; align-items: flex-start; padding-top: 6px; }
+  /* The hover zone: the pill plus, when a task is being previewed, the card hanging under it. */
+  /* Only the pill and a showing preview catch the mouse; the rest of this tall window stays click-through over
+     the chat and the apps below. */
+  #zone { display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+  #pill { pointer-events: auto; }
   #pill {
-    display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 14px; min-width: 120px; max-width: 440px;
+    display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 14px; min-width: 120px; max-width: 440px; box-sizing: border-box;
     border-radius: 17px; background: #0c0d10; color: #f2f3f5; box-shadow: 0 6px 22px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.06);
-    transition: min-width .28s cubic-bezier(.2,.8,.2,1), padding .28s;
+    transition: min-width .28s var(--ease), padding .28s;
   }
   #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--buddy); flex: none; box-shadow: 0 0 10px var(--buddy); transition: background .2s, box-shadow .2s; }
   /* Idle: Buddy is on but resting. Active: the bubble is open and listening. */
   body[data-state="idle"] #dot { background: #4a6fae; box-shadow: none; }
   body[data-state="idle"] #label { color: #9aa1ad; }
   body[data-state="active"] #dot { box-shadow: 0 0 12px var(--buddy), 0 0 3px var(--buddy); }
-  #hint { display: none; font: 10.5px "Schibsted Grotesk", sans-serif; color: #6f7682; }
-  body[data-state="idle"] #pill:not(.open) #hint, body[data-state="active"] #hint { display: inline; }
+  #hint { display: none; font: 10.5px "Schibsted Grotesk", sans-serif; color: #6f7682; white-space: nowrap; }
+  body[data-state="idle"] #pill:not(.open) #hint, body[data-state="active"] #hint, body[data-state="speaking"] #hint, body[data-state="listening"] #hint { display: inline; }
   body[data-state="busy"] #dot { animation: breathe 1.1s ease-in-out infinite; }
   body[data-state="confirm"] #dot { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: breathe .8s ease-in-out infinite; }
   body[data-state="picking"] #dot { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
   body[data-state="done"] #dot { background: var(--green); box-shadow: 0 0 10px var(--green); }
   @keyframes breathe { 50% { transform: scale(.6); opacity: .55; } }
+  /* Listening and speaking: the dot becomes a small level meter. Listening follows the mic; speaking pulses. */
+  #meter { display: none; align-items: center; gap: 2px; height: 14px; flex: none; }
+  #meter i { width: 3px; height: 4px; border-radius: 2px; background: var(--buddy); transition: height .08s linear; }
+  body[data-state="listening"] #meter, body[data-state="speaking"] #meter { display: inline-flex; }
+  body[data-state="listening"] #dot, body[data-state="speaking"] #dot { display: none; }
+  body[data-state="speaking"] #meter i { animation: talk .9s ease-in-out infinite; }
+  body[data-state="speaking"] #meter i:nth-child(2) { animation-delay: -.3s; }
+  body[data-state="speaking"] #meter i:nth-child(3) { animation-delay: -.6s; }
+  body[data-state="speaking"] #meter i:nth-child(4) { animation-delay: -.15s; }
+  @keyframes talk { 0%, 100% { height: 4px; } 50% { height: 13px; } }
   #label { flex: 1; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #d9dce2; }
   #actions { display: none; gap: 4px; }
-  #pill.open { min-width: 340px; }
+  #pill.open { min-width: 400px; }
   /* While the chat is open the pill widens to the chat card (388px wide with padding), so the two read as one. */
   body.attached #pill { min-width: 360px; transition-duration: .32s; }
   #pill.open #actions { display: flex; }
   button { border: 0; border-radius: 11px; height: 24px; padding: 0 10px; font: 600 12px "Schibsted Grotesk", "Segoe UI", sans-serif; cursor: pointer; background: #23262d; color: #f2f3f5; }
   button:hover { background: var(--buddy); }
   kbd { font: 10.5px "Schibsted Grotesk", sans-serif; color: #8b919c; margin-left: 4px; }
-  /* Task chips: one per task window, numbered, with the task's own status dot. Click to open or tuck away. */
+  /* Task chips: one per task window, numbered, with the task's own status dot. Click to open or tuck away;
+     hover to preview. */
   #chips { display: none; gap: 4px; flex: none; padding-left: 8px; border-left: 1px solid rgba(255,255,255,.09); }
   #chips.on { display: flex; }
   .chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px 0 6px; border-radius: 11px; background: #1a1c21; color: #c9cdd4; font: 600 11.5px "Schibsted Grotesk", sans-serif; font-variant-numeric: tabular-nums; }
-  .chip:hover { background: #2a2d34; }
+  .chip:hover, .chip.peeking { background: #2a2d34; }
   .chip.open { box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); color: #f2f3f5; }
   .chip i { width: 7px; height: 7px; border-radius: 50%; background: #4a6fae; }
   .chip[data-state="working"] i { background: var(--buddy); box-shadow: 0 0 8px var(--buddy); animation: breathe 1.1s ease-in-out infinite; }
   .chip[data-state="confirm"] i { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: breathe .8s ease-in-out infinite; }
   .chip[data-state="done"] i { background: var(--green); box-shadow: 0 0 8px var(--green); }
   .chip[data-state="error"] i { background: #ff8a5c; }
-  @media (prefers-reduced-motion: reduce) { #pill { transition: none; } #dot, .chip i { animation: none !important; } }
+
+  /* Task preview: hangs from the pill like the chat does, showing a live picture of the task's window. */
+  #peek {
+    width: 268px; box-sizing: border-box; padding-top: 8px; /* the gap is part of the hover zone */
+    pointer-events: none; opacity: 0; transform: translateY(-10px) scale(.97); transform-origin: top center;
+    transition: opacity .16s linear, transform .26s var(--ease);
+  }
+  #peek.on { pointer-events: auto; opacity: 1; transform: none; }
+  #peek .card { border-radius: 16px; background: #0c0d10; padding: 8px; box-shadow: 0 14px 34px rgba(0,0,0,.36), inset 0 0 0 1px rgba(255,255,255,.07); color: #eef0f3; }
+  #peek .shot { display: block; position: relative; width: 100%; height: auto; aspect-ratio: 420 / 560; max-height: 250px; border-radius: 10px; overflow: hidden; background: #15171b; cursor: pointer; padding: 0; }
+  #peek .shot img { width: 100%; height: 100%; object-fit: cover; object-position: bottom; display: block; }
+  #peek .shot img:not([src]) { visibility: hidden; }
+  #peek .shot:hover { box-shadow: inset 0 0 0 1px rgba(47,122,255,.6); background: #15171b; }
+  #peek .meta { display: flex; align-items: center; gap: 7px; padding: 9px 4px 2px; }
+  #peek .meta i { width: 7px; height: 7px; border-radius: 50%; background: #4a6fae; flex: none; }
+  #peek[data-state="working"] .meta i { background: var(--buddy); box-shadow: 0 0 8px var(--buddy); }
+  #peek[data-state="confirm"] .meta i { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+  #peek[data-state="done"] .meta i { background: var(--green); }
+  #peek .title { flex: 1; font-weight: 600; font-size: 12.5px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #peek .state { font-size: 11px; color: #8b919c; white-space: nowrap; }
+  #peek .line { padding: 3px 4px 0 18px; font-size: 11.5px; line-height: 1.4; color: #9aa1ad; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #peek .line:empty { display: none; }
+  #peek .row { display: flex; gap: 5px; padding: 8px 2px 2px; }
+  #peek .row button { flex: none; }
+  #peek .row .grow { flex: 1; }
+  #peek .allow { background: var(--buddy); }
+  #peek .allow:hover { background: #4689ff; }
+  #peek .deny { color: #ff8a5c; }
+  #peek .deny:hover { background: #2a2d34; }
+  #peek .close { background: none; color: #8b919c; padding: 0 8px; }
+  #peek .close:hover { background: #3a1e1a; color: #ff8a5c; }
+  #peek:not([data-state="confirm"]) .ask-only { display: none; }
+  @media (prefers-reduced-motion: reduce) { #pill, #peek { transition: none; } #dot, .chip i, #meter i { animation: none !important; } }
 </style>
 </head>
 <body data-state="idle">
-<div id="pill">
-  <span id="dot"></span>
-  <span id="label">Buddy</span>
-  <span id="hint"></span>
-  <span id="chips"></span>
-  <span id="actions">
-    <button id="ask">Ask</button>
-    <button id="mark" title="Ctrl+Alt+M: click something to explain it, or draw over things to ask about them">Mark</button>
-    <button id="task" title="Open a task window: an agent with its own conversation that works while you do other things">Task</button>
-  </span>
+<div id="zone">
+  <div id="pill">
+    <span id="dot"></span>
+    <span id="meter"><i></i><i></i><i></i><i></i></span>
+    <span id="label">Buddy</span>
+    <span id="hint"></span>
+    <span id="chips"></span>
+    <span id="actions">
+      <button id="ask">Ask</button>
+      <button id="talk" title="Ctrl+Alt+T: say it instead of typing. Pause when you're done.">Talk</button>
+      <button id="mark" title="Ctrl+Alt+M: click something to explain it, or draw over things to ask about them">Mark</button>
+      <button id="task" title="Open a task window: an agent with its own conversation that works while you do other things">Task</button>
+    </span>
+  </div>
+  <div id="peek">
+    <div class="card">
+      <button class="shot" id="peek-open" title="Open this task"><img id="peek-img" alt=""></button>
+      <div class="meta"><i></i><span class="title" id="peek-title"></span><span class="state" id="peek-state"></span></div>
+      <div class="line" id="peek-line"></div>
+      <div class="row">
+        <button class="allow ask-only" id="peek-allow">Allow</button>
+        <button class="deny ask-only" id="peek-deny">Don't</button>
+        <button id="peek-show">Open</button>
+        <span class="grow"></span>
+        <button class="close" id="peek-close" title="Close and stop this task">Close</button>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
-  const pill = document.getElementById("pill");
-  const label = document.getElementById("label");
-  let state = "idle", idleTimer;
+  const $ = (id) => document.getElementById(id);
+  const zone = $("zone"), pill = $("pill"), label = $("label"), peek = $("peek");
+  const act = (a) => window.buddy.islandAction(a);
+  let state = "idle", idleTimer, tasks = [], peekId = null, peekTimer, leaveTimer;
 
-  pill.addEventListener("mouseenter", () => { window.buddy.islandHover(true); if (state === "idle") pill.classList.add("open"); });
-  pill.addEventListener("mouseleave", () => { window.buddy.islandHover(false); pill.classList.remove("open"); });
-  document.getElementById("ask").addEventListener("click", () => window.buddy.islandAction("ask"));
-  document.getElementById("mark").addEventListener("click", () => window.buddy.islandAction("mark"));
-  document.getElementById("task").addEventListener("click", () => window.buddy.islandAction("task"));
+  zone.addEventListener("mouseenter", () => {
+    clearTimeout(leaveTimer);
+    window.buddy.islandHover(true);
+    if (state === "idle") pill.classList.add("open");
+  });
+  // A short grace period, so moving from a chip down to its preview doesn't close it.
+  zone.addEventListener("mouseleave", () => {
+    leaveTimer = setTimeout(() => {
+      window.buddy.islandHover(false);
+      pill.classList.remove("open");
+      showPeek(null);
+    }, 160);
+  });
+  // Main noticed the mouse is long gone (a missed mouseleave): settle as if it had left.
+  window.buddy.onIslandLeave(() => {
+    clearTimeout(leaveTimer);
+    pill.classList.remove("open");
+    showPeek(null);
+  });
+  $("ask").addEventListener("click", () => act("ask"));
+  $("talk").addEventListener("click", () => act("talk"));
+  $("mark").addEventListener("click", () => act("mark"));
+  $("task").addEventListener("click", () => act("task"));
+
   const STATE_WORDS = { idle: "ready", working: "working", confirm: "needs your OK", done: "finished", error: "hit a problem" };
+
+  function showPeek(id) {
+    clearTimeout(peekTimer);
+    if (id === peekId) return;
+    peekId = id;
+    window.buddy.taskPeek(id);
+    for (const c of document.querySelectorAll(".chip")) c.classList.toggle("peeking", c.dataset.id === id);
+    if (!id) return peek.classList.remove("on");
+    $("peek-img").removeAttribute("src");
+    fillPeek();
+    peek.classList.add("on");
+  }
+
+  function fillPeek() {
+    const t = tasks.find((x) => x.id === peekId);
+    if (!t) return showPeek(null);
+    peek.dataset.state = t.state;
+    $("peek-title").textContent = `${t.n} · ${t.title}`;
+    $("peek-state").textContent = STATE_WORDS[t.state] ?? t.state;
+    $("peek-line").textContent = t.line ?? "";
+    $("peek-show").textContent = t.open ? "Tuck away" : "Open";
+  }
+
+  window.buddy.onTaskPeek(({ id, src }) => {
+    if (id === peekId && src) $("peek-img").src = src;
+  });
+  const onPeek = (verb) => () => peekId && act(`${verb}:${peekId}`);
+  $("peek-open").addEventListener("click", onPeek("task-open"));
+  $("peek-show").addEventListener("click", onPeek("task"));
+  $("peek-allow").addEventListener("click", onPeek("task-allow"));
+  $("peek-deny").addEventListener("click", onPeek("task-deny"));
+  $("peek-close").addEventListener("click", () => { onPeek("task-close")(); showPeek(null); });
+
   window.buddy.onTasks((list) => {
-    const box = document.getElementById("chips");
+    tasks = list;
+    const box = $("chips");
     box.replaceChildren(...list.map((t) => {
       const chip = document.createElement("button");
-      chip.className = "chip" + (t.open ? " open" : "");
+      chip.className = "chip" + (t.open ? " open" : "") + (t.id === peekId ? " peeking" : "");
       chip.dataset.state = t.state;
-      chip.title = `${t.title}: ${STATE_WORDS[t.state] ?? t.state} · click to ${t.open ? "tuck away" : "open"}`;
+      chip.dataset.id = t.id;
+      chip.setAttribute("aria-label", `${t.title}: ${STATE_WORDS[t.state] ?? t.state}`);
       chip.append(document.createElement("i"), String(t.n));
-      chip.addEventListener("click", () => window.buddy.islandAction("task:" + t.id));
+      chip.addEventListener("click", () => act("task:" + t.id));
+      chip.addEventListener("mouseenter", () => { clearTimeout(peekTimer); peekTimer = setTimeout(() => showPeek(t.id), peekId ? 0 : 140); });
       return chip;
     }));
     box.classList.toggle("on", list.length > 0);
+    if (peekId) fillPeek();
   });
   window.buddy.onIslandAttach((on) => document.body.classList.toggle("attached", on));
-  label.addEventListener("click", () => window.buddy.islandAction(state === "idle" ? "ask" : "show"));
-  const hint = document.getElementById("hint");
+  label.addEventListener("click", () => act(state === "speaking" ? "hush" : state === "idle" ? "ask" : "show"));
+  const hint = $("hint");
 
-  window.buddy.onIsland(({ state: s, text, hotkey = "" }) => {
-    document.getElementById("ask").title = hotkey;
+  // The mic level while listening drives the meter: the middle bars move most.
+  const bars = [...document.querySelectorAll("#meter i")];
+  window.buddy.onVoiceLevel((level) => {
+    if (state !== "listening") return;
+    bars.forEach((b, i) => (b.style.height = `${4 + Math.round(level * [7, 10, 9, 6][i] * (0.75 + Math.random() * 0.5))}px`));
+  });
+
+  window.buddy.onIsland(({ state: s, text, hotkey = "", talkKey = "" }) => {
+    $("ask").title = hotkey;
+    $("talk").title = `${talkKey}: say it instead of typing. Pause when you're done.`;
     state = s;
     document.body.dataset.state = s;
     label.textContent = text || "Buddy";
-    hint.textContent = s === "active" ? `${hotkey} to close` : hotkey;
+    hint.textContent = s === "active" ? `${hotkey} to close` : s === "listening" ? `${talkKey} to send` : s === "speaking" ? "click to stop" : hotkey;
+    if (s !== "listening") bars.forEach((b) => (b.style.height = ""));
     if (s !== "idle") pill.classList.remove("open");
     clearTimeout(idleTimer);
-    if (s === "done") idleTimer = setTimeout(() => window.buddy.islandAction("settle"), 4000);
+    if (s === "done") idleTimer = setTimeout(() => act("settle"), 4000);
   });
 </script>
 </body>

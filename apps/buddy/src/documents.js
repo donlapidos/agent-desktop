@@ -128,8 +128,15 @@ export async function writeDocx({ title, markdown, dir }) {
   });
   fs.mkdirSync(dir, { recursive: true });
   const base = safeName(title);
-  let file = path.join(dir, `${base}.docx`);
-  for (let n = 2; fs.existsSync(file); n++) file = path.join(dir, `${base} (${n}).docx`);
-  fs.writeFileSync(file, await Packer.toBuffer(doc));
-  return file;
+  const data = await Packer.toBuffer(doc);
+  // "wx" fails if the file exists, so a name taken between looking and writing still never gets overwritten.
+  for (let n = 1; ; n++) {
+    const file = path.join(dir, n === 1 ? `${base}.docx` : `${base} (${n}).docx`);
+    try {
+      fs.writeFileSync(file, data, { flag: "wx" });
+      return file;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+    }
+  }
 }

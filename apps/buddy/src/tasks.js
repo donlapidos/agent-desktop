@@ -17,16 +17,18 @@ const shorten = (text, n = 34) => {
  *   here: string, icon: string,
  *   makeBrain: (ui: object) => any,      // a new Brain wired to this ui, or null without an API key
  *   currentTarget: () => Promise<any>,   // the user's foreground window, Buddy's own windows excluded
- *   point: Function, explain: Function,  // shared pointer and explainer, as the bubble uses them
- *   onChange: (tasks: object[]) => void, // the island's chips
+ *   point: (bounds: import("./geometry.js").PhysicalRect, caption: string, owner: string) => Promise<void>, // the shared pointer; each task points as its own owner
+ *   release: (owner: string, ms?: number) => void,     // lets go of the pointer if that owner still has it
+ *   explain: (plate: object, observed: any) => void,  // opens a plate seen in `observed` (the task's window)
+ *   onChange: (tasks: object[]) => void,               // the island's chips
  * }} deps
  */
-export function createTasks({ here, icon, makeBrain, currentTarget, point, explain, onChange }) {
+export function createTasks({ here, icon, makeBrain, currentTarget, point, release, explain, onChange }) {
   const tasks = new Map();
   let seq = 0;
 
   const summary = () =>
-    [...tasks.values()].map((t) => ({ id: t.id, n: t.n, title: t.title, state: t.state, open: t.win.isVisible() }));
+    [...tasks.values()].map((t) => ({ id: t.id, n: t.n, title: t.title, state: t.state, line: t.line, open: t.win.isVisible() }));
   const changed = () => onChange(summary());
   const fromSender = (sender) => [...tasks.values()].find((t) => !t.win.isDestroyed() && t.win.webContents === sender);
   const send = (t, channel, payload) => {
@@ -35,6 +37,7 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, expla
 
   function setState(t, state, line) {
     t.state = state;
+    t.line = line ?? (state === "idle" || state === "done" ? t.brain?.transcript().filter((m) => m.role === "buddy").at(-1)?.text ?? "" : t.line);
     send(t, "task-state", { state, line, title: t.title });
     changed();
   }
@@ -48,15 +51,15 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, expla
 
   function uiFor(t) {
     return {
-      point,
-      explain,
+      point: (bounds, caption) => point(bounds, caption, t.id),
+      explain: (plate) => explain(plate, t.target),
       status: (text) => setState(t, "working", text),
       // Approvals belong to the task asking: its window comes forward (without stealing focus) and its chip turns amber.
-      confirm: (summaryText, bounds) => {
-        if (bounds) point(bounds, summaryText);
+      confirm: (summaryText, bounds, note) => {
+        if (bounds) point(bounds, summaryText, t.id);
         if (!t.win.isVisible()) t.win.showInactive();
         setState(t, "confirm", `Waiting for your OK: ${summaryText}`);
-        send(t, "task-confirm", { summary: summaryText });
+        send(t, "task-confirm", { summary: summaryText, note });
         return new Promise((resolve) => (t.pendingConfirm = resolve));
       },
     };
@@ -114,6 +117,8 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, expla
     tasks.delete(t.id);
     t.brain.cancel();
     t.pendingConfirm?.("deny");
+    t.pendingConfirm = null;
+    release(t.id, 0);
     if (!t.win.isDestroyed()) t.win.destroy();
     changed();
   }
@@ -125,6 +130,35 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, expla
     if (t.win.isVisible() && t.win.isFocused()) return t.win.hide();
     t.win.show();
     t.win.focus();
+  }
+
+  function open(id) {
+    const t = tasks.get(id);
+    if (!t) return;
+    t.win.show();
+    t.win.focus();
+  }
+
+  function reply(t, decision) {
+    if (!t?.pendingConfirm) return;
+    t.pendingConfirm(decision);
+    t.pendingConfirm = null;
+    send(t, "task-confirm-done");
+    setState(t, "working", decision === "deny" ? "Okay, not doing that." : "Working…");
+  }
+
+  // The island's preview of a task: a live picture of its window, taken even while the window is tucked away
+  // (stayHidden keeps a hidden window rendering for the capture without showing it).
+  async function peek(id, width = 480) {
+    const t = tasks.get(id);
+    if (!t || t.win.isDestroyed()) return null;
+    try {
+      const img = await t.win.webContents.capturePage(undefined, { stayHidden: true });
+      if (img.isEmpty()) return null;
+      return `data:image/jpeg;base64,${img.resize({ width, quality: "good" }).toJPEG(82).toString("base64")}`;
+    } catch {
+      return null;
+    }
   }
 
   ipcMain.handle("task-ask", async (e, text) => {
@@ -145,25 +179,31 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, expla
       return { reply: `Something broke: ${err.message}`, title: t.title };
     } finally {
       t.busy = false;
+      release(t.id);
     }
   });
   ipcMain.on("task-cancel", (e) => {
     const t = fromSender(e.sender);
-    t?.brain.cancel();
-    t?.pendingConfirm?.("deny");
+    if (!t) return;
+    t.brain.cancel();
+    reply(t, "deny");
   });
-  ipcMain.on("task-confirm-reply", (e, decision) => {
-    const t = fromSender(e.sender);
-    if (!t?.pendingConfirm) return;
-    t.pendingConfirm(decision);
-    t.pendingConfirm = null;
-    setState(t, "working", decision === "deny" ? "Okay, not doing that." : "Working…");
-  });
+  ipcMain.on("task-confirm-reply", (e, decision) => reply(fromSender(e.sender), decision));
   ipcMain.on("task-minimize", (e) => fromSender(e.sender)?.win.hide());
   ipcMain.on("task-close", (e) => {
     const t = fromSender(e.sender);
     if (t) stop(t);
   });
 
-  return { create, toggle, list: summary, count: () => tasks.size };
+  return {
+    create,
+    toggle,
+    open,
+    peek,
+    // From the island's preview: approve or refuse without opening the window, or close the task.
+    answer: (id, decision) => reply(tasks.get(id), decision),
+    close: (id) => tasks.has(id) && stop(tasks.get(id)),
+    list: summary,
+    count: () => tasks.size,
+  };
 }

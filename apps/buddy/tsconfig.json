@@ -1,0 +1,31 @@
+{
+  // Type-checks Buddy's JavaScript through its JSDoc types; nothing is compiled (Electron runs the .js as is).
+  // Every main-process module is listed; `npm run check` must pass.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2023",
+    "lib": ["es2023", "dom"],
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": false
+  },
+  "files": [
+    "src/main.js",
+    "src/approvals.js",
+    "src/geometry.js",
+    "src/modes.js",
+    "src/desktop.js",
+    "src/brain.js",
+    "src/tasks.js",
+    "src/voice.js",
+    "src/speech.js",
+    "src/models.js",
+    "src/speakable.js",
+    "src/explainer.js",
+    "src/documents.js"
+  ]
+}

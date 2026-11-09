@@ -44,7 +44,9 @@
 
   #confirm { display: none; margin: 0 16px 10px; padding: 10px 12px; border-radius: 12px; background: var(--field); box-shadow: inset 0 0 0 1px rgba(245,165,36,.35); flex-direction: column; gap: 8px; }
   #confirm.on { display: flex; }
-  #confirm .what { font-weight: 600; }
+  #confirm .what { font-weight: 600; overflow-wrap: anywhere; }
+  #confirm .why { font-size: 12.5px; color: var(--muted); }
+  #confirm .why:empty { display: none; }
   #confirm .row { display: flex; gap: 6px; flex-wrap: wrap; }
 
   form { display: flex; gap: 6px; padding: 10px 12px 12px; border-top: 1px solid var(--line); flex: none; }
@@ -74,6 +76,7 @@
 <div id="log"></div>
 <div id="confirm">
   <div>Can I do this? <span class="what" id="what"></span></div>
+  <div class="why" id="why"></div>
   <div class="row">
     <button class="btn" data-d="allow">Allow</button>
     <button class="btn ghost" data-d="always">Allow for this task</button>
@@ -124,14 +127,22 @@
     }
   });
 
-  window.buddy.onTaskConfirm(({ summary }) => {
+  // An approval takes a deliberate click. This window is often focused while the task works (you just typed in it),
+  // so nothing on the card takes focus, or the next Space or Enter would press Allow; and clicks in the card's first
+  // moments are ignored.
+  const ARM_MS = 500;
+  let confirmAt = 0;
+  window.buddy.onTaskConfirm(({ summary, note }) => {
     $("what").textContent = summary;
+    $("why").textContent = note && note.toLowerCase() !== summary.toLowerCase() ? note : "";
     $("confirm").classList.add("on");
-    $("confirm").querySelector(".btn").focus();
+    confirmAt = performance.now();
   });
+  // Answered from the island's preview instead.
+  window.buddy.onTaskConfirmDone(() => $("confirm").classList.remove("on"));
   $("confirm").addEventListener("click", (e) => {
     const d = e.target.dataset?.d;
-    if (!d) return;
+    if (!d || performance.now() - confirmAt < ARM_MS) return;
     $("confirm").classList.remove("on");
     window.buddy.taskConfirmReply(d);
   });
@@ -159,9 +170,13 @@
     $("input").focus();
   });
 
-  // Enter sends, Shift+Enter breaks the line; the field grows with what you type.
+  // Enter sends, Shift+Enter breaks the line; the field grows with what you type. While the task works, Enter does
+  // nothing (only the Stop button or Esc stops it), so typing ahead can't cancel it by accident.
   $("input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("form").requestSubmit(); }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!busy) $("form").requestSubmit();
+    }
   });
   $("input").addEventListener("input", (e) => {
     e.target.style.height = "";

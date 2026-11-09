@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'">
+</head>
+<body>
+<script>
+  // Buddy's ears and mouth: a hidden page that owns the microphone while Buddy listens and plays what it says.
+  // The microphone is open only between "listen" and the end of what the user says, never while Buddy speaks.
+  const RATE = 16000; // the speech recognizer's rate
+  const FRAME_MS = 50;
+  const END_SILENCE_MS = 1000; // a pause this long after speech ends the request
+  const NO_SPEECH_MS = 7000;
+  const MAX_MS = 30000;
+  const PRE_ROLL_MS = 300;
+
+  let take = null; // the request being recorded
+
+  // Mic samples arrive at the device rate; the recognizer wants 16 kHz mono. Average each output sample's span.
+  function downsample(chunks, from) {
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const input = new Float32Array(total);
+    let o = 0;
+    for (const c of chunks) { input.set(c, o); o += c.length; }
+    if (from === RATE) return input;
+    const ratio = from / RATE;
+    const out = new Float32Array(Math.floor(total / ratio));
+    for (let i = 0; i < out.length; i++) {
+      const a = Math.floor(i * ratio), b = Math.min(total, Math.floor((i + 1) * ratio));
+      let s = 0;
+      for (let j = a; j < b; j++) s += input[j];
+      out[i] = s / Math.max(1, b - a);
+    }
+    return out;
+  }
+
+  async function listen() {
+    if (take) return;
+    const t = { chunks: [], frame: [], frameLen: 0, speech: false, lastVoice: 0, started: performance.now(), floor: null, loud: 0 };
+    take = t;
+    try {
+      t.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (err) {
+      take = null;
+      return window.buddy.voiceHeard({ error: err.name === "NotAllowedError" ? "mic-blocked" : "no-mic" });
+    }
+    if (take !== t) return t.stream.getTracks().forEach((x) => x.stop());
+    t.ctx = new AudioContext();
+    await t.ctx.audioWorklet.addModule("voice-capture.js");
+    const src = t.ctx.createMediaStreamSource(t.stream);
+    const node = new AudioWorkletNode(t.ctx, "capture");
+    src.connect(node);
+    const frameSize = Math.round((t.ctx.sampleRate * FRAME_MS) / 1000);
+    window.buddy.voiceState("listening");
+    node.port.onmessage = ({ data }) => {
+      if (take !== t) return;
+      t.chunks.push(data);
+      for (const v of data) {
+        t.frame.push(v * v);
+        if (t.frame.length >= frameSize) onFrame(t, Math.sqrt(t.frame.reduce((a, b) => a + b, 0) / t.frame.length));
+      }
+    };
+  }
+
+  // Energy-based end-of-speech: learn the room's noise in the first frames, call anything well above it speech,
+  // and stop after a second of quiet once speech has started.
+  function onFrame(t, rms) {
+    t.frame = [];
+    const now = performance.now();
+    t.floor = t.floor == null ? rms : rms < t.floor * 2 ? t.floor * 0.95 + rms * 0.05 : t.floor;
+    const threshold = Math.max(0.012, t.floor * 3);
+    window.buddy.voiceLevel(Math.min(1, rms / 0.12));
+    if (rms > threshold) {
+      if (++t.loud >= 2 && !t.speech) t.speech = true;
+      t.lastVoice = now;
+    } else t.loud = 0;
+    // Keep only a short pre-roll until speech starts.
+    if (!t.speech) {
+      const keep = Math.ceil((t.ctx.sampleRate * PRE_ROLL_MS) / 1000 / 1536) + 1;
+      if (t.chunks.length > keep) t.chunks.splice(0, t.chunks.length - keep);
+    }
+    if (t.speech && now - t.lastVoice > END_SILENCE_MS) finish();
+    else if (!t.speech && now - t.started > NO_SPEECH_MS) finish();
+    else if (now - t.started > MAX_MS) finish();
+  }
+
+  function close(t) {
+    t.stream?.getTracks().forEach((x) => x.stop());
+    t.ctx?.close();
+  }
+
+  function finish() {
+    const t = take;
+    if (!t) return;
+    take = null;
+    close(t);
+    if (!t.speech || !t.ctx) return window.buddy.voiceHeard({ error: "silence" });
+    window.buddy.voiceHeard({ pcm: downsample(t.chunks, t.ctx.sampleRate) });
+  }
+
+  function cancel() {
+    const t = take;
+    take = null;
+    if (t) close(t);
+  }
+
+  // Playback: one clip at a time; "hush" cuts it off.
+  let player = null;
+  let playing = null;
+  function play({ id, audio, rate }) {
+    hush();
+    player ??= new AudioContext();
+    const buffer = player.createBuffer(1, audio.length, rate);
+    buffer.copyToChannel(audio, 0);
+    const src = player.createBufferSource();
+    src.buffer = buffer;
+    src.connect(player.destination);
+    playing = src;
+    src.onended = () => {
+      if (playing === src) playing = null;
+      window.buddy.voicePlayed(id);
+    };
+    src.start();
+  }
+  function hush() {
+    const p = playing;
+    playing = null;
+    try { p?.stop(); } catch {}
+  }
+
+  window.buddy.onVoice(({ cmd, ...rest }) => {
+    if (cmd === "listen") listen();
+    else if (cmd === "finish") finish();
+    else if (cmd === "cancel") cancel();
+    else if (cmd === "play") play(rest);
+    else if (cmd === "hush") hush();
+  });
+</script>
+</body>
+</html>

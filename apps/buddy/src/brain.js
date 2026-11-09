@@ -1,10 +1,11 @@
 // The agent loop. Claude decides; agent-desktop observes and acts; the UI points and confirms.
 import Anthropic from "@anthropic-ai/sdk";
-import { renderReading, renderTree, runDesktop, snapshotResilient, waitForText } from "./desktop.js";
+import { askUser, requestApproval } from "./approvals.js";
+import { observe, perform, renderReading, renderTree, snapshotResilient, waitForText } from "./desktop.js";
 import { writeDocx } from "./documents.js";
 
 const MODEL = process.env.BUDDY_MODEL ?? "claude-opus-5-5";
-const EFFORT = process.env.BUDDY_EFFORT ?? "medium";
+const EFFORT = /** @type {"low" | "medium" | "high" | "xhigh" | "max"} */ (process.env.BUDDY_EFFORT ?? "medium");
 const MAX_STEPS = 30;
 
 const SYSTEM = `You are Buddy, a friendly assistant that lives next to the user's cursor on their Windows desktop.
@@ -130,6 +131,7 @@ no long lists. Speak about the UI by its visible labels, never by ref ids.`;
 
 const str = (description) => ({ type: "string", description });
 
+/** @type {Anthropic.Beta.BetaTool[]} */
 const TOOLS = [
   {
     name: "look",
@@ -353,22 +355,87 @@ const describeTarget = (target) =>
 const trimEnvelope = (res) =>
   JSON.stringify(res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error }).slice(0, 4000);
 
+// The approval card says exactly what will happen, built from the action itself; Claude's own summary is only the
+// note under it, so a card can never read "Click Save" while the action types something else.
+const VERBS = {
+  click: "Click", double_click: "Double-click", right_click: "Right-click", clear: "Clear", check: "Check",
+  uncheck: "Uncheck", toggle: "Toggle", expand: "Expand", collapse: "Collapse", scroll_to: "Scroll to",
+};
+const quote = (s, n = 160) => {
+  const t = String(s).replace(/\s+/g, " ").trim();
+  return JSON.stringify(t.length > n ? `${t.slice(0, n - 1)}…` : t);
+};
+
+// Each Brain reads and acts in its own agent-desktop session (see desktop.js). main.js clears old ones at startup.
+export const SESSION_PREFIX = "buddy-";
+let sessions = 0;
+const newSession = () => `${SESSION_PREFIX}${process.pid}-${++sessions}`;
+
+// The conversation has to fit the model's context window. Past this budget, older messages lose their images, long
+// tool output and explainer drawings; if that still isn't enough, the oldest whole turns go. The latest messages
+// are never trimmed. Trimming only happens past the budget, so the prompt cache holds between trims.
+const HISTORY_BUDGET = 350_000; // characters, roughly 90k tokens
+const IMAGE_CHARS = 6_000; // what one image is counted as
+const KEEP_RECENT = 6;
+
+const blockSize = (b) =>
+  b?.type === "image" ? IMAGE_CHARS
+    : b?.type === "tool_result" && Array.isArray(b.content) ? b.content.reduce((n, c) => n + blockSize(c), 100)
+      : JSON.stringify(b).length;
+const messageSize = (m) => (typeof m.content === "string" ? m.content.length : m.content.reduce((n, b) => n + blockSize(b), 0));
+const isTurnStart = (m) => m.role === "user" && !(Array.isArray(m.content) && m.content.some((b) => b.type === "tool_result"));
+
+function trimBlock(b) {
+  if (b.type === "image") return { type: "text", text: "[an earlier image, removed to save room]" };
+  if (b.type === "tool_result" && Array.isArray(b.content)) return { ...b, content: b.content.map(trimBlock) };
+  if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 600) {
+    return { ...b, content: `${b.content.slice(0, 300)}… [older output trimmed; look again for the current state]` };
+  }
+  if (b.type === "tool_use" && b.name === "show_explainer") {
+    return { ...b, input: { common_name: b.input?.common_name, summary: b.input?.summary, note: "plate shown; its drawing was removed to save room" } };
+  }
+  return b;
+}
+
+// Added to a request the user said out loud: the reply and the pointer captions will be read to them.
+const SPOKEN =
+  "\n\n(They said this out loud; it was transcribed by speech recognition, so allow for misheard words. Your reply and your point_at captions will be read aloud: answer in short, natural spoken sentences, lead with the answer, and skip Markdown, tables and long lists. Anything they need to read or copy belongs in a document or an explainer.)";
+
+/**
+ * What a Brain needs from the window it answers in (the bubble, or a task window).
+ * @typedef {{
+ *   apiKey?: string,
+ *   point: (bounds: import("./geometry.js").PhysicalRect, caption: string) => Promise<void>,
+ *   confirm: import("./approvals.js").Ask["confirm"],
+ *   status: (text: string) => void,
+ *   explain?: (plate: object) => void | Promise<void>,
+ *   trace?: (entry: object) => void,
+ *   documentsDir?: string,
+ *   openFile?: (file: string) => Promise<string>,
+ * }} BrainUI
+ */
+
 export class Brain {
   /**
-   * @param {{ point: Function, confirm: Function, status: Function, apiKey?: string }} ui
+   * @param {BrainUI} ui
    */
   constructor(ui) {
     this.ui = ui;
     this.client = new Anthropic(ui.apiKey ? { apiKey: ui.apiKey } : {});
+    this.session = newSession();
     this.reset();
   }
 
   reset() {
     /** @type {Anthropic.Beta.BetaMessageParam[]} */
     this.messages = [];
+    /** @type {Map<string, import("./geometry.js").PhysicalRect>} ref -> where agent-desktop says it is */
     this.bounds = new Map();
+    this.labels = new Map(); // ref -> plain element name, for approval cards
+    /** @type {Map<number, import("./geometry.js").PhysicalRect>} mark number -> its box */
     this.marks = new Map();
-    this.autoApprove = false;
+    // "Allow for this task": set by the approval card, good until this answer ends.
+    this.standing = { allowed: false };
     // What the user said and what Buddy answered, in plain words, for task windows to show.
     this.log = [];
   }
@@ -381,13 +448,13 @@ export class Brain {
     this.abort?.abort();
   }
 
-  ask(text, target) {
+  ask(text, target, { spoken = false } = {}) {
     this.log.push({ role: "user", text });
-    return this.run(target, `${describeTarget(target)}\n\n${text}`);
+    return this.run(target, `${describeTarget(target)}\n\n${text}${spoken ? SPOKEN : ""}`);
   }
 
   // The user highlighted things on screen with the marker and asked about them.
-  askWithMarks(text, { image, marks, target }) {
+  askWithMarks(text, { image, marks, target }, { spoken = false } = {}) {
     this.log.push({ role: "user", text: `${text} (about ${marks.length === 1 ? "1 mark" : `${marks.length} marks`})` });
     this.marks = new Map(marks.map((m) => [m.n, m.bounds]));
     const lines = marks.map((m) => {
@@ -400,7 +467,7 @@ export class Brain {
       describeTarget(target),
       `The user highlighted ${marks.length === 1 ? "one thing" : `${marks.length} things`} on screen with a marker. The image shows that area with their translucent blue marker strokes, each numbered at its start. Refer to them as mark 1, mark 2 (they see the numbers). You can fly your pointer to a mark with point_at mark=<n>.`,
       lines.join("\n"),
-      `Their question: ${text}`,
+      `Their question: ${text}${spoken ? SPOKEN : ""}`,
     ].join("\n\n");
     return this.run(target, [
       { type: "image", source: { type: "base64", media_type: "image/png", data: image } },
@@ -427,7 +494,7 @@ export class Brain {
   }
 
   async run(target, content) {
-    this.autoApprove = false;
+    this.standing = { allowed: false };
     this.target = target;
     this.messages.push({ role: "user", content });
 
@@ -459,8 +526,26 @@ export class Brain {
     });
   }
 
+  fitHistory() {
+    const total = () => this.messages.reduce((n, m) => n + messageSize(m), 0);
+    if (total() <= HISTORY_BUDGET) return;
+    const before = total();
+    for (let i = 0; i < this.messages.length - KEEP_RECENT; i++) {
+      const m = this.messages[i];
+      if (Array.isArray(m.content)) this.messages[i] = { ...m, content: m.content.map(trimBlock) };
+    }
+    // Still too big: drop the oldest whole turns, never the one in progress.
+    while (total() > HISTORY_BUDGET) {
+      const next = this.messages.findIndex((m, i) => i > 0 && isTurnStart(m));
+      if (next <= 0 || next >= this.messages.findLastIndex(isTurnStart)) break;
+      this.messages.splice(0, next);
+    }
+    this.ui.trace?.({ kind: "history-trimmed", before, after: total(), messages: this.messages.length });
+  }
+
   async loop() {
     for (let step = 0; step < MAX_STEPS; step++) {
+      this.fitHistory();
       const callStart = Date.now();
       // Streamed so a plate with a motion sequence can run long without the request timing out.
       const response = await this.client.beta.messages
@@ -491,6 +576,7 @@ export class Brain {
       if (response.stop_reason === "max_tokens") return said || "I ran out of room mid-thought. Try a narrower ask.";
       if (said) this.ui.status(said);
 
+      /** @type {Anthropic.Beta.BetaToolResultBlockParam[]} */
       const results = [];
       for (const use of toolUses) {
         if (this.abort.signal.aborted) break;
@@ -511,11 +597,37 @@ export class Brain {
     return [];
   }
 
-  async approve(summary, ref) {
-    if (this.autoApprove) return true;
-    const decision = await this.ui.confirm(summary, ref ? this.bounds.get(ref) : null);
-    if (decision === "always") this.autoApprove = true;
-    return decision === "allow" || decision === "always";
+  // What an act call will do, in words built from the call itself.
+  describeAction(input) {
+    if (input.action === "press") return `Press ${input.keys}`;
+    const el = this.labels.get(input.ref) ?? "the highlighted control";
+    if (input.action === "set_value") return `Set ${el} to ${quote(input.text)}`;
+    if (input.action === "type") return `Type ${quote(input.text)} into ${el}`;
+    if (input.action === "select") return `Choose ${quote(input.text)} in ${el}`;
+    return `${VERBS[input.action]} ${el}`;
+  }
+
+  /**
+   * @param {{ ref?: string | null, note?: string }} [how]
+   * @returns {import("./approvals.js").Ask}
+   */
+  asking({ ref = null, note } = {}) {
+    return { confirm: (...a) => this.ui.confirm(...a), bounds: ref ? this.bounds.get(ref) ?? null : null, note, standing: this.standing };
+  }
+
+  // Everything that operates the computer comes through here: the user's OK yields a slip, and only the slip runs
+  // the action (approvals.js, desktop.perform). Actions take turns with other tasks (takeTurn).
+  /**
+   * @param {import("./approvals.js").InputAction} action
+   * @param {{ ref?: string | null, note?: string, status?: string }} [how]
+   */
+  async operate(action, { ref = null, note, status } = {}) {
+    const slip = await requestApproval(action, this.asking({ ref, note }));
+    if (!slip) return "The user declined.";
+    return takeTurn(async () => {
+      this.ui.status(status ?? action.summary);
+      return trimEnvelope(await perform(slip, { session: this.session }));
+    });
   }
 
   async runTool(name, input) {
@@ -524,10 +636,10 @@ export class Brain {
         this.ui.status("Looking…");
         const extra = ["-i", "--compact", "--include-bounds", ...(input.skeleton && !input.root ? ["--skeleton"] : [])];
         const res = input.root
-          ? await runDesktop(["snapshot", "--root", input.root, ...extra], { timeoutMs: 20_000 })
-          : await snapshotResilient(this.windowArgs(input), extra, { timeoutMs: 20_000 });
+          ? await observe(["snapshot", "--root", input.root, ...extra], { timeoutMs: 20_000, session: this.session })
+          : await snapshotResilient(this.windowArgs(input), extra, { timeoutMs: 20_000, session: this.session });
         if (!res.ok) return trimEnvelope(res);
-        const { text } = renderTree(res.data.tree, this.bounds);
+        const { text } = renderTree(res.data.tree, this.bounds, undefined, this.labels);
         const unreadable = res.data.unreadable_regions ? ` · ${res.data.unreadable_regions} region(s) unreadable, take a screenshot if what you need isn't here` : "";
         const head = `window: ${res.data.window?.title ?? res.data.app ?? "?"} · ${res.data.ref_count ?? 0} refs${res.data.complete === false ? " · partial" : ""}${unreadable}`;
         return `${head}\n${text}`;
@@ -537,7 +649,7 @@ export class Brain {
         const res = await snapshotResilient(
           this.windowArgs(input),
           ["--compact", "--max-depth", "40", "--timeout-ms", "15000", "--include-bounds"],
-          { timeoutMs: 30_000 },
+          { timeoutMs: 30_000, session: this.session },
         );
         if (!res.ok) return trimEnvelope(res);
         const { title, text } = renderReading(res.data.tree);
@@ -547,7 +659,7 @@ export class Brain {
       }
       case "screenshot": {
         this.ui.status("Taking a look…");
-        const res = await runDesktop(["screenshot", ...this.windowArgs(input)], { timeoutMs: 20_000 });
+        const res = await observe(["screenshot", ...this.windowArgs(input)], { timeoutMs: 20_000, session: this.session });
         const data = res.ok ? res.data?.base64 ?? res.data?.png ?? res.data?.image ?? res.data?.data : null;
         if (typeof data !== "string") return trimEnvelope(res);
         return [{ type: "image", source: { type: "base64", media_type: "image/png", data } }];
@@ -575,22 +687,19 @@ export class Brain {
         return "The plate is open beside the user's pointer.";
       }
       case "list_windows": {
-        const res = await runDesktop(["list-windows"]);
+        const res = await observe(["list-windows"]);
         if (!res.ok) return trimEnvelope(res);
         const windows = Array.isArray(res.data) ? res.data : res.data?.windows ?? [];
         return windows.map((w) => `${w.id} · ${w.app_name} · "${w.title}"${w.is_focused ? " (focused)" : ""}`).join("\n");
       }
       case "launch_app": {
-        if (!(await this.approve(`Open ${input.name}`))) return "The user declined.";
-        return takeTurn(async () => {
-          this.ui.status(`Opening ${input.name}…`);
-          return trimEnvelope(await runDesktop(["launch", input.name], { timeoutMs: 30_000 }));
-        });
+        if (!input.name) return "launch_app needs a name.";
+        return this.operate({ args: ["launch", input.name], headed: false, summary: `Open ${input.name}` }, { status: `Opening ${input.name}…` });
       }
       case "create_document": {
         if (!input.title?.trim() || !input.markdown?.trim()) return "create_document needs a title and markdown.";
         if (!this.ui.documentsDir || !this.ui.openFile) return "Documents can't be created from here.";
-        if (!(await this.approve(`Create "${input.title}" in Documents\\Buddy and open it in Word`))) return "The user declined.";
+        if (!(await askUser(`Create "${input.title}" in Documents\\Buddy and open it in Word`, this.asking()))) return "The user declined.";
         this.ui.status("Writing the document…");
         const file = await writeDocx({ title: input.title, markdown: input.markdown, dir: this.ui.documentsDir });
         const error = await this.ui.openFile(file);
@@ -600,21 +709,19 @@ export class Brain {
         const command = { focus: "focus-window", restore: "restore", minimize: "minimize", maximize: "maximize" }[input.action];
         if (!command || !input.app) return "window needs an action and an app.";
         const args = [command, "--app", input.app, ...(input.window_id ? ["--window-id", input.window_id] : [])];
-        return takeTurn(async () => {
-          this.ui.status(`${input.action[0].toUpperCase()}${input.action.slice(1)} ${input.app}…`);
-          return trimEnvelope(await runDesktop(args, { headed: true }));
-        });
+        const verb = `${input.action[0].toUpperCase()}${input.action.slice(1)}`;
+        return this.operate({ args, headed: true, summary: `${verb} ${input.app.replace(/\.exe$/i, "")}` });
       }
       case "wait_for_user": {
         if (!this.target) return "I don't know which window they're working in; look first.";
         if (!input.text?.trim()) return "wait_for_user needs text.";
         const seconds = Math.min(120, Math.max(10, Number(input.seconds) || 45));
         this.ui.status("Your turn: go ahead…");
-        const result = await waitForText({ win: this.target, text: input.text, timeoutMs: seconds * 1000, signal: this.abort.signal });
+        const result = await waitForText({ win: this.target, text: input.text, timeoutMs: seconds * 1000, signal: this.abort.signal, session: this.session });
         if (result.status === "appeared") {
           const done = `They did it: "${input.text}" is on screen now.`;
           if (!result.snapshot) return `${done} Look again before pointing at the next step.`;
-          const { text } = renderTree(result.snapshot.tree, this.bounds);
+          const { text } = renderTree(result.snapshot.tree, this.bounds, undefined, this.labels);
           const w = result.window;
           const where = w.id === this.target.id ? "their window" : `a new window "${w.title}" (window_id ${w.id})`;
           return `${done} Here is ${where} now; point at the next step with these refs:\n${text}`;
@@ -630,24 +737,17 @@ export class Brain {
   }
 
   async act(input) {
+    const how = { note: input.summary, status: input.summary };
     if (input.action === "press") {
       if (!input.keys) return "press needs keys.";
-      if (!(await this.approve(input.summary))) return "The user declined.";
       const app = this.target ? ["--app", this.target.app_name] : [];
-      return takeTurn(async () => {
-        this.ui.status(input.summary);
-        return trimEnvelope(await runDesktop(["press", input.keys, ...app], { headed: true }));
-      });
+      return this.operate({ args: ["press", input.keys, ...app], headed: true, summary: this.describeAction(input) }, how);
     }
     const spec = ACTION_ARGS[input.action];
     if (!spec) return `Unknown action ${input.action}.`;
     if (!input.ref) return `${input.action} needs a ref.`;
     if (spec.text && input.text == null) return `${input.action} needs text.`;
-    if (!(await this.approve(input.summary, input.ref))) return "The user declined.";
     const args = [spec.cmd, input.ref, ...(spec.text ? [input.text] : [])];
-    return takeTurn(async () => {
-      this.ui.status(input.summary);
-      return trimEnvelope(await runDesktop(args, { headed: spec.headed }));
-    });
+    return this.operate({ args, headed: !!spec.headed, summary: this.describeAction(input) }, { ...how, ref: input.ref });
   }
 }

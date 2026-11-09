@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 const on = (channel) => (fn) => ipcRenderer.on(channel, (_e, payload) => fn(payload));
 
 contextBridge.exposeInMainWorld("buddy", {
-  ask: (text) => ipcRenderer.invoke("ask", text),
+  ask: (text, opts) => ipcRenderer.invoke("ask", text, opts),
   setKey: (key) => ipcRenderer.invoke("set-key", key),
   cancel: () => ipcRenderer.send("cancel"),
   reset: () => ipcRenderer.send("reset"),
@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("buddy", {
   onRelease: on("release"),
   onIsland: on("island"),
   onIslandAttach: on("island-attach"),
+  onIslandLeave: on("island-leave"),
   onHideBuddy: on("hide-buddy"),
   islandHover: (inside) => ipcRenderer.send("island-hover", inside),
   islandAction: (action) => ipcRenderer.send("island-action", action),
@@ -35,6 +36,7 @@ contextBridge.exposeInMainWorld("buddy", {
   onTaskInit: on("task-init"),
   onTaskState: on("task-state"),
   onTaskConfirm: on("task-confirm"),
+  onTaskConfirmDone: on("task-confirm-done"),
   onTasks: on("tasks"),
   taskAsk: (text) => ipcRenderer.invoke("task-ask", text),
   taskCancel: () => ipcRenderer.send("task-cancel"),
@@ -44,4 +46,17 @@ contextBridge.exposeInMainWorld("buddy", {
   newTask: () => ipcRenderer.send("new-task"),
   onBubbleOpen: on("bubble-open"),
   onBubbleClose: on("bubble-close"),
+  // Island task previews
+  taskPeek: (id) => ipcRenderer.send("task-peek", id),
+  onTaskPeek: on("task-peek"),
+  // Voice: the bubble's mic and the hidden voice page
+  talk: () => ipcRenderer.send("talk"),
+  onListening: on("listening"),
+  onVoiceText: on("voice-text"),
+  onVoiceLevel: on("voice-level"),
+  onVoice: on("voice"),
+  voiceState: (state) => ipcRenderer.send("voice-state", state),
+  voiceLevel: (level) => ipcRenderer.send("voice-level", level),
+  voiceHeard: (result) => ipcRenderer.send("voice-heard", result),
+  voicePlayed: (id) => ipcRenderer.send("voice-played", id),
 });

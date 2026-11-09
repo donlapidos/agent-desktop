@@ -6,22 +6,35 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Brain } from "./brain.js";
+import { Brain, SESSION_PREFIX } from "./brain.js";
 import { elementAt, elementsAt, foregroundWindow, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
 import { createTasks } from "./tasks.js";
+import { asDipPoint, asDipRect, asPhysicalPoint, asPhysicalRect } from "./geometry.js";
+import { BUSY, canMove } from "./modes.js";
+import { createVoice } from "./voice.js";
+
+/** @typedef {import("./geometry.js").DipPoint} DipPoint */
+/** @typedef {import("./geometry.js").DipRect} DipRect */
+/** @typedef {import("./geometry.js").PhysicalPoint} PhysicalPoint */
+/** @typedef {import("./geometry.js").PhysicalRect} PhysicalRect */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Not Ctrl+Alt+Space: the Claude desktop app's Quick Entry already owns it.
 const HOTKEY = process.env.BUDDY_HOTKEY ?? "Control+Alt+B";
 const EXPLAIN_HOTKEY = process.env.BUDDY_EXPLAIN_HOTKEY ?? "Control+Alt+E";
 const MARK_HOTKEY = process.env.BUDDY_MARK_HOTKEY ?? "Control+Alt+M";
+// Not Ctrl+Alt+V: that's Paste Special in Office.
+const TALK_HOTKEY = process.env.BUDDY_TALK_HOTKEY ?? "Control+Alt+T";
 const IDLE_RESET_MS = 15 * 60_000;
 // The window starts at the top of the island so the card can slide out from under the pill; the card itself
 // sits 46px down (see bubble.html).
 const BUBBLE = { width: 400, height: 306 };
 const BUBBLE_FOLD_MS = 300; // matches the close transition in bubble.html
-const ISLAND = { width: 460, height: 48 };
+// Tall enough for a task preview to drop out of the pill; everything below the pill is transparent and
+// click-through unless a preview is showing.
+const ISLAND = { width: 460, height: 440 };
+const PEEK_EVERY_MS = 800;
 const EXPLAINER = { width: 640, height: 760 };
 const CROP = { width: 1200, height: 800 }; // physical px around the pointer sent with an explain request
 
@@ -38,23 +51,56 @@ app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 if (!process.env.BUDDY_GPU) app.disableHardwareAcceleration();
 app.on("second-instance", () => summon());
 
-let tray, bubble, island, brain, tasks;
+let tray, bubble, island, brain, tasks, voice;
+let spokenTurn = false; // the question being answered was said out loud
+let islandState = "idle";
+let saying = "Speaking"; // the island's label while Buddy reads a reply aloud
 const overlays = new Map();
-let pendingConfirm = null;
-let busy = false;
-let marking = false;
-let marks = []; // { n, displayId, points (screen DIP), bbox (DIP) }
+// What Buddy is doing (see modes.js). `approval` is set while a "working" answer waits for the user's OK.
+/** @typedef {import("./modes.js").Mode} Mode */
+/** @type {Mode} */
+let mode = "idle";
+/** @type {((decision: string) => void) | null} */
+let approval = null;
+
+// The mode as it is now. Code that awaited something re-checks with this, because a hotkey or the bubble may have
+// moved Buddy on in the meantime (the checker otherwise assumes `mode` can't change across an await).
+/** @returns {Mode} */
+const currentMode = () => mode;
+
+// Every change of mode goes through here. A move modes.js doesn't allow is refused and logged to timing.log: it's a
+// bug, and better caught than half-done.
+/** @param {Mode} next @returns {boolean} whether the move happened */
+function enter(next) {
+  if (!canMove(mode, next)) {
+    trace({ kind: "refused-mode-change", from: mode, to: next });
+    return false;
+  }
+  mode = next;
+  return true;
+}
+/** @type {{ n: number, displayId: number, points: DipPoint[], bbox: DipRect }[]} */
+let marks = [];
 let pendingMarks = null; // what the user highlighted, waiting for their question
 let markWin = null; // the freeze-frame of the screen the user draws on
 let markDisplay = null;
 let bubbleHideTimer = null;
 let lastAskAt = 0;
 let target = null;
-let focusPoint = null; // DIP point the current task is about; explainers open beside it
+/** @type {DipPoint | null} */
+let focusPoint = null; // where the current question is about; explainers open beside it
 let explainerShown = false;
 
 const ownPids = () => [process.pid, ...app.getAppMetrics().map((m) => m.pid)];
-const toPhysical = (p) => (process.platform === "win32" ? screen.dipToScreenPoint(p) : p);
+
+// Crossing between DIP and physical pixels (see geometry.js). These are the only crossings.
+/** @param {DipPoint} p @returns {PhysicalPoint} */
+const toPhysicalPoint = (p) => asPhysicalPoint(process.platform === "win32" ? screen.dipToScreenPoint(p) : p);
+/** @param {DipRect} r @returns {PhysicalRect} */
+const toPhysicalRect = (r) => asPhysicalRect(process.platform === "win32" ? screen.dipToScreenRect(null, r) : r);
+/** @param {PhysicalRect} r @returns {DipRect} */
+const toDipRect = (r) => asDipRect(process.platform === "win32" ? screen.screenToDipRect(null, r) : r);
+const cursor = () => asDipPoint(screen.getCursorScreenPoint());
 
 // ---------- API key (encrypted at rest with the OS keychain) ----------
 
@@ -104,6 +150,7 @@ function createOverlays() {
   island?.moveTop();
 }
 
+/** @param {DipPoint} point */
 function overlayFor(point) {
   const display = screen.getDisplayNearestPoint(point);
   return { win: overlays.get(display.id), origin: display.bounds };
@@ -113,37 +160,70 @@ function broadcast(channel, payload) {
   for (const win of overlays.values()) if (!win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
+// Buddy's pointer follows the cursor, checking it 60 times a second while the mouse moves; once the mouse has been
+// still for a moment, 20 a second is plenty to notice it moving again, and costs a third as much.
+const CURSOR_FAST_MS = 16;
+const CURSOR_SLOW_MS = 50;
+const CURSOR_SETTLE_MS = 500;
+
 function trackCursor() {
   let last = "";
-  setInterval(() => {
-    const p = screen.getCursorScreenPoint();
+  let movedAt = 0;
+  const inside = new Map(); // overlay display id -> whether the cursor was on that display last time
+  const tick = () => {
+    const p = cursor();
     const key = `${p.x},${p.y}`;
-    if (key === last) return;
-    last = key;
-    for (const [id, win] of overlays) {
-      const d = screen.getAllDisplays().find((x) => x.id === id);
-      if (!d || win.isDestroyed()) continue;
-      const inside = p.x >= d.bounds.x && p.x < d.bounds.x + d.bounds.width && p.y >= d.bounds.y && p.y < d.bounds.y + d.bounds.height;
-      win.webContents.send("cursor", inside ? { x: p.x - d.bounds.x, y: p.y - d.bounds.y } : null);
+    if (key !== last) {
+      last = key;
+      movedAt = Date.now();
+      const displays = screen.getAllDisplays();
+      for (const [id, win] of overlays) {
+        const d = displays.find((x) => x.id === id);
+        if (!d || win.isDestroyed()) continue;
+        const on = p.x >= d.bounds.x && p.x < d.bounds.x + d.bounds.width && p.y >= d.bounds.y && p.y < d.bounds.y + d.bounds.height;
+        // A display the cursor isn't on hears so once, not on every move elsewhere.
+        if (on || inside.get(id) !== false) win.webContents.send("cursor", on ? { x: p.x - d.bounds.x, y: p.y - d.bounds.y } : null);
+        inside.set(id, on);
+      }
     }
-  }, 16);
+    setTimeout(tick, Date.now() - movedAt < CURSOR_SETTLE_MS ? CURSOR_FAST_MS : CURSOR_SLOW_MS);
+  };
+  tick();
 }
 
+/** @param {PhysicalRect} physical */
 function toLocalRect(physical) {
-  const dip = process.platform === "win32" ? screen.screenToDipRect(null, physical) : physical;
-  const center = { x: dip.x + dip.width / 2, y: dip.y + dip.height / 2 };
+  /** @type {DipRect} */
+  const dip = toDipRect(physical);
+  const center = asDipPoint({ x: dip.x + dip.width / 2, y: dip.y + dip.height / 2 });
   const { win, origin } = overlayFor(center);
   return { win, rect: { x: dip.x - origin.x, y: dip.y - origin.y, width: dip.width, height: dip.height } };
 }
 
-function point(bounds, caption) {
+// The pointer belongs to whoever pointed last: the bubble's conversation ("bubble") or a task (its id). `n` counts
+// points, so a release scheduled when one answer ends can't pull the pointer off a newer step.
+const pointer = { owner: null, n: 0 };
+
+/** @param {PhysicalRect} bounds @param {string} caption @param {string} [owner] */
+function point(bounds, caption, owner = "bubble") {
+  pointer.owner = owner;
+  pointer.n++;
   const { win, rect } = toLocalRect(bounds);
   for (const other of overlays.values()) if (other !== win) other.webContents.send("release");
   win?.webContents.send("point", { rect, caption });
   return new Promise((r) => setTimeout(r, 900));
 }
 
-const releasePointer = () => broadcast("release");
+// Lets go of the pointer after a moment, if `owner` still has it and hasn't pointed again.
+/** @param {string} owner @param {number} [ms] */
+function releaseLater(owner, ms = 6000) {
+  const n = pointer.n;
+  setTimeout(() => {
+    if (pointer.owner !== owner || pointer.n !== n) return;
+    pointer.owner = null;
+    broadcast("release");
+  }, ms);
+}
 
 // ---------- Island: a status pill at the top of the primary display ----------
 
@@ -173,6 +253,7 @@ function createIsland() {
     if (tasks) island.webContents.send("tasks", tasks.list());
   });
   island.webContents.on("render-process-gone", () => {
+    clearInterval(peekTimer);
     island.destroy();
     createIsland();
   });
@@ -191,14 +272,33 @@ function keepIsland() {
   const b = island.getBounds();
   if (b.x !== slot.x || b.y !== slot.y || b.width !== slot.width) island.setBounds(slot);
   if (!island.isVisible()) island.showInactive();
-  island.setAlwaysOnTop(true, "screen-saver");
+  // Re-applying "always on top" is the expensive part of this check, so only when Windows actually dropped it.
+  if (!island.isAlwaysOnTop()) island.setAlwaysOnTop(true, "screen-saver");
   island.moveTop();
+  // The island only lets clicks through again when its page sees the mouse leave. If that was missed and the
+  // cursor is now elsewhere, its transparent area would keep catching clicks meant for the apps beneath it.
+  const p = cursor();
+  const nb = island.getBounds();
+  const inside = p.x >= nb.x && p.x < nb.x + nb.width && p.y >= nb.y && p.y < nb.y + nb.height;
+  if (islandHovered && !inside) {
+    islandHovered = false;
+    island.setIgnoreMouseEvents(true, { forward: true });
+    island.webContents.send("island-leave");
+  }
 }
 
 const keyLabel = (accel) => accel.replace("Control", "Ctrl").replace("CommandOrControl", "Ctrl");
 
 function setIsland(state, text) {
-  if (island && !island.isDestroyed()) island.webContents.send("island", { state, text, hotkey: keyLabel(HOTKEY) });
+  islandState = state;
+  if (island && !island.isDestroyed()) island.webContents.send("island", { state, text, hotkey: keyLabel(HOTKEY), talkKey: keyLabel(TALK_HOTKEY) });
+}
+
+// The island when nothing is running: speaking while Buddy still talks, active while the bubble is open, else idle.
+function restIsland() {
+  if (voice?.speaking) setIsland("speaking", saying);
+  else if (bubble.isVisible()) setIsland("active", "Listening");
+  else setIsland("idle");
 }
 
 const status = (text) => {
@@ -228,15 +328,16 @@ function createBubble() {
     if (e.message.startsWith("TRACE ")) trace({ kind: "bubble", note: e.message.slice(6) });
   });
   bubble.on("blur", () => {
-    if (!busy && !pendingConfirm) hideBubble();
+    if (mode === "idle") hideBubble();
   });
   // Closing the bubble ends the conversation about what was marked.
   bubble.on("hide", () => {
-    if (!marking && !busy) clearMarks();
-    if (!marking && !busy && !pendingConfirm) setIsland("idle");
+    if (mode !== "idle") return;
+    clearMarks();
+    restIsland();
   });
   bubble.on("show", () => {
-    if (!busy && !pendingConfirm && !marking) setIsland("active", "Listening");
+    if (mode === "idle") restIsland();
   });
 }
 
@@ -275,7 +376,10 @@ function hideBubble({ now = false } = {}) {
 
 // The main hotkey switches Buddy between idle and active: it opens the bubble, or closes it if it's open.
 function toggle() {
-  if (bubble.isVisible() && !busy && !pendingConfirm && !marking) return hideBubble();
+  if (bubble.isVisible() && (mode === "idle" || mode === "listening")) {
+    voice?.cancelListening();
+    return hideBubble();
+  }
   summon();
 }
 
@@ -286,10 +390,10 @@ function releaseFocus() {
 }
 
 async function summon() {
-  if (busy) return showBubble({ focus: false });
+  if (mode === "working" || mode === "reading-marks") return showBubble({ focus: false });
   if (Date.now() - lastAskAt > IDLE_RESET_MS) brain?.reset();
   target = await foregroundWindow(ownPids());
-  focusPoint = screen.getCursorScreenPoint();
+  focusPoint = cursor();
   bubble.webContents.send("summon", {
     target: target ? `${target.app_name} — ${target.title}` : null,
     needsKey: !brain,
@@ -313,6 +417,7 @@ async function grabDisplay(display) {
   }
 }
 
+/** @param {DipPoint} dipPoint */
 async function captureAround(dipPoint) {
   const display = screen.getDisplayNearestPoint(dipPoint);
   const sf = display.scaleFactor;
@@ -333,16 +438,24 @@ async function captureAround(dipPoint) {
   }
 }
 
-async function explainAt(dipPoint, question) {
-  if (busy) return;
+/** @param {DipPoint} dipPoint @param {string} [question] */
+function explainAt(dipPoint, question) {
+  if (mode !== "idle") return;
   if (!brain) return summon();
-  busy = true;
+  enter("working");
+  return runExplain(dipPoint, question);
+}
+
+// Expects mode "working", set by the caller.
+/** @param {DipPoint} dipPoint @param {string} [question] */
+async function runExplain(dipPoint, question) {
+  spokenTurn = false;
   lastAskAt = Date.now();
   focusPoint = dipPoint;
   explainerShown = false;
   setIsland("busy", "Looking at that…");
   try {
-    const physical = toPhysical(dipPoint);
+    const physical = toPhysicalPoint(dipPoint);
     const [win, shot] = await Promise.all([windowAt(physical, ownPids()), captureAround(dipPoint)]);
     target = win;
     const element = await elementAt(win, physical);
@@ -358,33 +471,35 @@ async function explainAt(dipPoint, question) {
   } catch (err) {
     setIsland("done", `Couldn't explain that: ${err.message}`);
   } finally {
-    busy = false;
+    enter("idle");
+    releaseLater("bubble");
   }
 }
 
 // ---------- Marker: highlight things on screen with a pen, then ask about them ----------
 
+/** @param {DipPoint[]} points @returns {DipRect} */
 function bboxOf(points, pad = 10) {
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
   const x = Math.min(...xs) - pad;
   const y = Math.min(...ys) - pad;
-  return { x, y, width: Math.max(...xs) + pad - x, height: Math.max(...ys) + pad - y };
+  return asDipRect({ x, y, width: Math.max(...xs) + pad - x, height: Math.max(...ys) + pad - y });
 }
 
 // Marking draws on a still of the screen in an opaque window (like the Snipping Tool). Drawing straight on the
 // transparent overlay meant Windows repainted the whole screen for every stroke segment, which lagged.
 async function startMarking() {
-  if (busy || marking) return;
+  if (mode !== "idle") return;
   if (!brain) return summon();
   clearMarks();
-  marking = true;
+  enter("marking");
   hideBubble({ now: true });
   setIsland("picking", "Getting the screen ready…");
-  markDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  markDisplay = screen.getDisplayNearestPoint(cursor());
   try {
     const shot = await grabDisplay(markDisplay);
-    if (!marking) return;
+    if (currentMode() !== "marking") return;
     const win = new BrowserWindow({
       ...markDisplay.bounds,
       frame: false,
@@ -403,19 +518,20 @@ async function startMarking() {
     win.setAlwaysOnTop(true, "screen-saver");
     win.on("closed", () => {
       if (markWin === win) markWin = null;
-      if (marking) cancelMarking();
+      cancelMarking();
     });
     win.webContents.once("did-finish-load", () => win.webContents.send("mark-start", { png: shot.toPNG() }));
     win.loadFile(path.join(here, "ui/marker.html"));
   } catch (err) {
     stopMarkMode();
+    enter("idle");
     setIsland("done", `Couldn't start marking: ${err.message}`);
   }
 }
 
+// Takes the still down; the caller decides what mode comes next.
 // `delay` keeps the still up a moment so the overlay can paint the finished marks underneath first.
 function stopMarkMode(delay = 0) {
-  marking = false;
   globalShortcut.unregister("Return");
   globalShortcut.unregister("Escape");
   const win = markWin;
@@ -431,9 +547,11 @@ function clearMarks() {
 }
 
 function cancelMarking() {
+  if (mode !== "marking") return;
   stopMarkMode();
   clearMarks();
-  setIsland("idle");
+  enter("idle");
+  restIsland();
 }
 
 const dedupe = (els) => [...new Map(els.map((e) => [e.path, e])).values()];
@@ -443,8 +561,9 @@ const markLabel = (m) => {
   return text.length > 28 ? text.slice(0, 26) + "…" : text;
 };
 
+/** @param {{ image?: unknown, strokes?: unknown }} [result] what marker.html sent: untrusted, checked below */
 async function finishMarking({ image, strokes } = {}) {
-  if (!marking || !markDisplay) return;
+  if (mode !== "marking" || !markDisplay) return;
   const display = markDisplay;
   const valid = (Array.isArray(strokes) ? strokes : []).filter((s) => Array.isArray(s?.points) && s.points.length).slice(0, 50);
   if (!valid.length || typeof image !== "string") return cancelMarking();
@@ -454,16 +573,17 @@ async function finishMarking({ image, strokes } = {}) {
   marks = valid.map((s, i) => {
     const local = s.points.slice(0, 4000).map((p) => ({ x: Number(p.x), y: Number(p.y) }));
     overlay?.webContents.send("mark-drawn", { points: local, n: i + 1 });
-    const points = local.map((p) => ({ x: display.bounds.x + p.x, y: display.bounds.y + p.y }));
+    const points = local.map((p) => asDipPoint({ x: display.bounds.x + p.x, y: display.bounds.y + p.y }));
     return { n: i + 1, displayId: display.id, points, bbox: bboxOf(points) };
   });
   stopMarkMode(90);
+  enter("reading-marks");
   setIsland("busy", "Reading what you marked…");
   try {
     // Sample each stroke at its start, middle and end, and read the elements under those points.
     const samples = marks
       .flatMap((m) => [m.points[0], m.points[Math.floor(m.points.length / 2)], m.points.at(-1)])
-      .map(toPhysical);
+      .map(toPhysicalPoint);
     const wins = await windowsAt(samples, ownPids());
     const groups = new Map();
     samples.forEach((p, i) => {
@@ -479,24 +599,25 @@ async function finishMarking({ image, strokes } = {}) {
       }),
     );
 
-    const toPhysRect = (r) => (process.platform === "win32" ? screen.dipToScreenRect(null, r) : r);
     pendingMarks = {
       image,
       target: wins.find(Boolean) ?? null,
       marks: marks.map((m, i) => ({
         n: m.n,
-        bounds: toPhysRect(m.bbox),
+        bounds: toPhysicalRect(m.bbox),
         elements: dedupe(found.slice(i * 3, i * 3 + 3).filter(Boolean)),
       })),
     };
     target = pendingMarks.target;
     const last = marks.at(-1).bbox;
-    focusPoint = { x: last.x + last.width, y: last.y + last.height };
+    focusPoint = asDipPoint({ x: last.x + last.width, y: last.y + last.height });
     bubble.webContents.send("summon", { target: target ? target.app_name + " — " + target.title : null, needsKey: !brain });
     bubble.webContents.send("marks", pendingMarks.marks.map((m) => ({ n: m.n, label: markLabel(m) })));
-    setIsland("idle");
+    enter("idle");
     showBubble();
+    restIsland();
   } catch (err) {
+    enter("idle");
     clearMarks();
     setIsland("done", "Couldn't read the marks: " + err.message);
   }
@@ -524,37 +645,46 @@ ipcMain.on("mark-cancel", () => cancelMarking());
 // A single click in mark mode (before anything is drawn) explains the thing clicked.
 ipcMain.on("mark-click", (e, local) => {
   if (!fromMarker(e) || !local) return;
-  const dip = { x: markDisplay.bounds.x + Number(local.x), y: markDisplay.bounds.y + Number(local.y) };
+  const dip = asDipPoint({ x: markDisplay.bounds.x + Number(local.x), y: markDisplay.bounds.y + Number(local.y) });
   stopMarkMode();
+  enter("working");
   setIsland("busy", "Looking at that…");
   // Let the still close before the screen is captured for the explainer.
-  setTimeout(() => explainAt(dip), 120);
+  setTimeout(() => runExplain(dip), 120);
 });
 
 // Model-written plates run with JavaScript off, a strict CSP, and a session that refuses every network request.
 const EXPLAINER_PARTITION = "explainer";
 
 function lockExplainerSession() {
-  session.fromPartition(EXPLAINER_PARTITION).webRequest.onBeforeRequest((details, done) => {
+  const plates = session.fromPartition(EXPLAINER_PARTITION);
+  plates.webRequest.onBeforeRequest((details, done) => {
     done({ cancel: !/^(file|data):/.test(details.url) });
+  });
+  plates.setPermissionRequestHandler((_wc, _permission, done) => done(false));
+  // Only Buddy's voice page may open the microphone.
+  session.defaultSession.setPermissionRequestHandler((wc, permission, done) => {
+    done(permission !== "media" || wc.getURL().endsWith("/ui/voice.html"));
   });
 }
 
 const appLabel = (win) => win?.app_name?.replace(/\.exe$/i, "") || null;
 
-function openExplainer(explainer) {
-  explainerShown = true;
+// `near` is where the plate opens beside; `observed` is the window the subject was seen in. Callers pass their own,
+// so a task's plate doesn't borrow the bubble's place or app.
+/** @param {any} explainer @param {{ near?: DipPoint, observed?: { app_name?: string } | null }} [where] */
+function openExplainer(explainer, { near = cursor(), observed = null } = {}) {
   const dir = path.join(app.getPath("userData"), "explainers");
   fs.mkdirSync(dir, { recursive: true });
   const plateNo = fs.readdirSync(dir).filter((f) => f.endsWith(".html")).length + 1;
   const date = new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const reducedMotion = process.platform === "win32" && systemPreferences.getAnimationSettings().prefersReducedMotion;
-  const page = renderExplainer(explainer, { plateNo, observedIn: appLabel(target), date, reducedMotion });
+  const page = renderExplainer(explainer, { plateNo, observedIn: appLabel(observed), date, reducedMotion });
   const file = path.join(dir, `${Date.now()}.html`);
   fs.writeFileSync(file, page);
   const title = explainer.common_name ?? "Explainer";
 
-  const anchor = focusPoint ?? screen.getCursorScreenPoint();
+  const anchor = near;
   const { workArea } = screen.getDisplayNearestPoint(anchor);
   const w = Math.min(EXPLAINER.width, workArea.width - 32);
   const h = Math.min(EXPLAINER.height, workArea.height - 32);
@@ -583,27 +713,36 @@ function openExplainer(explainer) {
 
 // ---------- IPC ----------
 
-ipcMain.handle("ask", async (_e, text) => {
+ipcMain.handle("ask", async (_e, text, opts = {}) => {
   if (!brain) return { reply: "Add your Anthropic API key first." };
-  busy = true;
+  // Typed while the mic was open: the typing wins.
+  if (mode === "listening") voice.cancelListening();
+  else if (mode !== "idle") return { reply: BUSY[mode] };
+  enter("working");
   lastAskAt = Date.now();
   explainerShown = false;
+  spokenTurn = !!opts?.spoken;
+  voice?.hush();
   releaseFocus();
   setIsland("busy", "Thinking…");
+  let reply;
   try {
     const withMarks = pendingMarks;
     pendingMarks = null;
-    const reply = withMarks ? await brain.askWithMarks(text, withMarks) : await brain.ask(text, target);
-    setIsland("done", oneLine(reply));
-    return { reply };
+    const how = { spoken: spokenTurn };
+    reply = withMarks ? await brain.askWithMarks(text, withMarks, how) : await brain.ask(text, target, how);
   } catch (err) {
     setIsland("done", "Something broke");
     return { reply: `Something broke: ${err.message}` };
   } finally {
-    busy = false;
+    enter("idle");
     bubble.setFocusable(true);
-    setTimeout(releasePointer, 6000);
+    releaseLater("bubble");
   }
+  setIsland("done", oneLine(reply));
+  // After the mode is back to idle, so the island shows Buddy speaking (and a click stops it).
+  if (talksBack(spokenTurn)) speak(reply);
+  return { reply };
 });
 
 ipcMain.handle("set-key", (_e, key) => {
@@ -613,46 +752,156 @@ ipcMain.handle("set-key", (_e, key) => {
 });
 
 ipcMain.on("cancel", () => {
+  voice?.cancelListening();
+  voice?.hush();
   brain?.cancel();
-  pendingConfirm?.("deny");
+  answerApproval("deny");
 });
 ipcMain.on("reset", () => {
   brain?.reset();
   clearMarks();
 });
-ipcMain.on("hide", () => hideBubble());
-ipcMain.on("confirm-reply", (_e, decision) => {
-  trace({ kind: "confirm-reply", decision, waiting: !!pendingConfirm });
-  pendingConfirm?.(decision);
-  pendingConfirm = null;
-  setIsland("busy", "Working…");
+ipcMain.on("hide", () => {
+  voice?.hush();
+  hideBubble();
 });
-ipcMain.on("island-hover", (_e, inside) => island.setIgnoreMouseEvents(!inside, { forward: true }));
+ipcMain.on("confirm-reply", (_e, decision) => {
+  trace({ kind: "confirm-reply", decision, waiting: !!approval });
+  answerApproval(decision);
+});
+let islandHovered = false;
+ipcMain.on("island-hover", (_e, inside) => {
+  islandHovered = !!inside;
+  island.setIgnoreMouseEvents(!inside, { forward: true });
+});
 ipcMain.on("island-action", (_e, action) => {
-  if (action === "ask") summon();
-  else if (action === "mark") startMarking();
-  else if (action === "show") showBubble({ focus: false });
-  else if (action === "settle" && !busy) setIsland("idle");
-  else if (action === "task") newTask();
-  else if (action.startsWith("task:")) tasks.toggle(action.slice(5));
+  const [verb, id] = String(action).split(":");
+  if (verb === "ask") summon();
+  else if (verb === "mark") startMarking();
+  else if (verb === "talk") talk();
+  else if (verb === "hush") voice?.hush();
+  else if (verb === "show") showBubble({ focus: false });
+  else if (verb === "settle" && mode === "idle") restIsland();
+  else if (verb === "task" && !id) newTask();
+  else if (verb === "task") tasks.toggle(id);
+  else if (verb === "task-open") tasks.open(id);
+  else if (verb === "task-allow") tasks.answer(id, "allow");
+  else if (verb === "task-deny") tasks.answer(id, "deny");
+  else if (verb === "task-close") tasks.close(id);
 });
 
-function confirm(summary, bounds) {
+// While the island previews a task, refresh the picture of its window.
+let peekTimer = null;
+ipcMain.on("task-peek", (_e, id) => {
+  clearInterval(peekTimer);
+  peekTimer = null;
+  if (!id) return;
+  const refresh = async () => {
+    const src = await tasks.peek(id);
+    if (island && !island.isDestroyed()) island.webContents.send("task-peek", { id, src });
+  };
+  refresh();
+  peekTimer = setInterval(refresh, PEEK_EVERY_MS);
+});
+
+// `summary` says exactly what will happen; `note` is Claude's own description, shown smaller under it.
+/** @param {string} summary @param {PhysicalRect | null} bounds @param {string} [note] @returns {Promise<string>} */
+function confirm(summary, bounds, note) {
   trace({ kind: "confirm-shown", bubbleVisible: bubble.isVisible(), focusable: bubble.isFocusable(), bounds: bubble.getBounds() });
   if (bounds) point(bounds, summary);
   showBubble({ focus: false });
-  bubble.webContents.send("confirm", { summary });
+  bubble.webContents.send("confirm", { summary, note });
   setIsland("confirm", `Waiting for your OK: ${summary}`);
   return new Promise((resolve) => {
-    pendingConfirm = resolve;
+    approval = resolve;
   });
+}
+
+// The one way out of waiting for an OK, whether answered on the card or cancelled with Esc or Stop.
+function answerApproval(decision) {
+  const resolve = approval;
+  approval = null;
+  if (!resolve) return;
+  resolve(decision);
+  setIsland("busy", "Working…");
 }
 
 // When the bubble's own conversation starts guiding, the bubble folds back into the island: the pointer and its
 // caption carry the step, and the bubble would otherwise sit over the ribbon or dialog they need to click.
+/** @param {PhysicalRect} bounds @param {string} caption */
 function guidePoint(bounds, caption) {
-  if (busy && bubble.isVisible() && !pendingConfirm) hideBubble();
+  if (mode === "working" && bubble.isVisible() && !approval) hideBubble();
+  // In a spoken conversation Buddy says each step as it points, the way a person beside you would.
+  if (caption && talksBack(spokenTurn)) voice.say(caption);
   return point(bounds, caption);
+}
+
+// ---------- Voice: talk to Buddy, and hear it talk back ----------
+
+// Talk back: "spoken" (answer aloud when you spoke), "always", or "never".
+const talkBackMode = () => readSettings().talkBack ?? "spoken";
+const talksBack = (spoken) => !!voice && (talkBackMode() === "always" || (talkBackMode() === "spoken" && spoken));
+
+const HEARD_ERRORS = {
+  silence: "Didn't hear anything",
+  "mic-blocked": "Microphone blocked: Settings › Privacy › Microphone",
+  "no-mic": "No microphone found",
+};
+
+// The talk hotkey: start listening; pressed again while listening, stop and use what was said. It also cuts
+// Buddy off mid-sentence.
+async function talk() {
+  if (!voice) return;
+  if (mode === "listening") return voice.finishListening();
+  const wasSpeaking = voice.speaking;
+  voice.hush();
+  if (mode !== "idle") return wasSpeaking || setIsland(islandState, BUSY[mode]);
+  if (!brain) return summon();
+  enter("listening");
+  if (bubble.isVisible()) showBubble();
+  else await summon();
+  bubble.webContents.send("listening", true);
+  setIsland("listening", "Listening…");
+  const { text, error } = await voice.listen();
+  bubble.webContents.send("listening", false);
+  // Something else took over meanwhile (they typed the question instead): leave it be.
+  if (currentMode() !== "listening") return;
+  enter("idle");
+  if (text) return bubble.webContents.send("voice-text", text);
+  if (error === "cancelled") return restIsland();
+  setIsland("done", HEARD_ERRORS[error] ?? `Couldn't hear you: ${error}`);
+}
+
+// Reads a reply aloud; the island shows it while Buddy speaks.
+function speak(text) {
+  saying = oneLine(text);
+  voice.say(text);
+}
+ipcMain.on("talk", () => talk());
+
+let downloadSettle = null; // returns the island to rest once download progress stops coming
+function onVoiceState(state, info) {
+  if (state === "listening" && mode === "listening") setIsland("listening", "Listening… pause when you're done");
+  else if (state === "transcribing" && mode === "listening") setIsland("busy", "Got it…");
+  // While a question runs, the island shows its progress; spoken guide steps don't take it over.
+  else if (state === "speaking" && mode === "idle") setIsland("speaking", saying);
+  else if (state === "quiet" && islandState === "speaking") restIsland();
+  else if (state === "downloading" && mode === "idle") {
+    setIsland("busy", `Getting Buddy's ${info.what === "speaking" ? "voice" : "ears"} ready… ${Math.round((100 * info.loaded) / info.total)}%`);
+    clearTimeout(downloadSettle);
+    downloadSettle = setTimeout(() => islandState === "busy" && mode === "idle" && restIsland(), 4000);
+  }
+}
+
+function startVoice() {
+  voice = createVoice({
+    here,
+    cacheDir: process.env.BUDDY_MODELS_DIR ?? path.join(app.getPath("userData"), "models"),
+    onState: onVoiceState,
+    onLevel: (level) => island?.isDestroyed() || island?.webContents.send("voice-level", level),
+    trace,
+  });
+  setTimeout(() => voice.prepare(), 4000);
 }
 
 // Timing log (userData/timing.log, JSON lines): how long each model call and tool took, to find slow steps.
@@ -662,14 +911,33 @@ function trace(entry) {
   } catch {}
 }
 
+// Each Brain keeps its snapshots in its own agent-desktop session (brain.js). Those from earlier runs are dead
+// weight under ~/.agent-desktop/sessions, so they go at startup; only Buddy's own (buddy-*) are touched.
+function clearOldSessions() {
+  const root = path.join(process.env.AGENT_DESKTOP_HOME ?? path.join(app.getPath("home"), ".agent-desktop"), "sessions");
+  try {
+    for (const dir of fs.readdirSync(root)) {
+      if (dir.startsWith(SESSION_PREFIX) && !dir.startsWith(`${SESSION_PREFIX}${process.pid}-`)) {
+        fs.rmSync(path.join(root, dir), { recursive: true, force: true });
+      }
+    }
+  } catch {}
+}
+
 // Where create_document saves, and how it opens the result (Word, or whatever opens .docx here).
 const documentsDir = () => path.join(app.getPath("documents"), "Buddy");
 const openFile = (file) => shell.openPath(file);
 
+// The bubble's plates open beside what the user pointed at and say which app it was in.
+function bubbleExplain(plate) {
+  explainerShown = true;
+  openExplainer(plate, { near: focusPoint ?? cursor(), observed: target });
+}
+
 function startBrain() {
   const apiKey = loadApiKey();
   brain = apiKey
-    ? new Brain({ apiKey, point: guidePoint, confirm, status, explain: openExplainer, trace, documentsDir: documentsDir(), openFile })
+    ? new Brain({ apiKey, point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
     : null;
 }
 
@@ -685,7 +953,8 @@ function startTasks() {
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,
-    explain: openExplainer,
+    release: releaseLater,
+    explain: (plate, observed) => openExplainer(plate, { observed }),
     onChange: (list) => {
       if (island && !island.isDestroyed()) island.webContents.send("tasks", list);
     },
@@ -696,7 +965,7 @@ function startTasks() {
 // while the bubble is free for something else.
 async function newTask({ fromBubble = false } = {}) {
   if (!brain) return summon();
-  if (fromBubble && busy) return setIsland("done", "Let Buddy finish this answer, then make it a task");
+  if (fromBubble && mode !== "idle") return setIsland("done", "Let Buddy finish this answer, then make it a task");
   let result;
   if (fromBubble && brain.transcript().length) {
     result = await tasks.create({ brain, target });
@@ -774,6 +1043,23 @@ function createTray() {
       { label: `Mark or explain something  (${MARK_HOTKEY})`, click: startMarking },
       { label: "New conversation", click: () => brain?.reset() },
       { label: "New task window", click: () => newTask() },
+      { label: `Talk to Buddy  (${TALK_HOTKEY})`, click: () => talk() },
+      {
+        label: "Talk back",
+        submenu: [
+          ["spoken", "When I speak"],
+          ["always", "Always"],
+          ["never", "Never"],
+        ].map(([mode, label]) => ({
+          label,
+          type: "radio",
+          checked: talkBackMode() === mode,
+          click: () => {
+            writeSettings({ talkBack: mode });
+            if (mode === "never") voice?.hush();
+          },
+        })),
+      },
       {
         label: "Start with Windows",
         type: "checkbox",
@@ -806,28 +1092,32 @@ function registerKey(accel, fn) {
 }
 
 app.whenReady().then(() => {
-  if (process.env.BUDDY_THEME) nativeTheme.themeSource = process.env.BUDDY_THEME;
+  if (process.env.BUDDY_THEME) nativeTheme.themeSource = /** @type {"light" | "dark"} */ (process.env.BUDDY_THEME);
   app.setAppUserModelId(APP_ID);
-  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_THEME;
+  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_THEME;
   if (!devRun) firstRunSetup();
   lockExplainerSession();
+  clearOldSessions();
   startBrain();
   createOverlays();
   createIsland();
   createBubble();
   createTray();
   startTasks();
+  startVoice();
   trackCursor();
   setInterval(keepIsland, 1500);
-  for (const event of ["display-added", "display-removed", "display-metrics-changed"]) {
-    screen.on(event, () => {
-      createOverlays();
-      keepIsland();
-    });
-  }
+  const displaysChanged = () => {
+    createOverlays();
+    keepIsland();
+  };
+  screen.on("display-added", displaysChanged);
+  screen.on("display-removed", displaysChanged);
+  screen.on("display-metrics-changed", displaysChanged);
   registerKey(HOTKEY, toggle);
   registerKey(MARK_HOTKEY, startMarking);
-  registerKey(EXPLAIN_HOTKEY, () => explainAt(screen.getCursorScreenPoint()));
+  registerKey(EXPLAIN_HOTKEY, () => explainAt(cursor()));
+  registerKey(TALK_HOTKEY, talk);
   if (process.env.BUDDY_POINT_TEST) {
     // Dev check for coordinate mapping: BUDDY_POINT_TEST='{"x":..,"y":..,"width":..,"height":..}' (physical px)
     setTimeout(() => point(JSON.parse(process.env.BUDDY_POINT_TEST), "Is this the right spot?"), 2500);
@@ -893,11 +1183,29 @@ app.whenReady().then(() => {
       await wait(1800);
       wins[0].hide(); // tuck task 1 into the island while it works
       await wait(2600);
-      const shot = async (name, win) => fs.writeFileSync(path.join(out, name), (await win.webContents.capturePage()).toPNG());
+      const shot = async (name, win) => {
+        win.webContents.invalidate(); // a transparent window can hand back its last frame otherwise
+        await wait(150);
+        fs.writeFileSync(path.join(out, name), (await win.webContents.capturePage()).toPNG());
+      };
       await shot("task-2-confirm.png", wins[1]);
       await shot("island.png", island);
       console.log("TASKS", JSON.stringify(tasks.list()));
-      wins[1].webContents.executeJavaScript(`document.querySelector('#confirm [data-d="allow"]').click();`);
+      // Preview the tucked-away task from the island, then approve task 2 from its preview.
+      await island.webContents.executeJavaScript(`showPeek("t1")`);
+      await wait(1500);
+      await shot("island-peek-hidden.png", island);
+      await island.webContents.executeJavaScript(`showPeek("t2")`);
+      await wait(1500);
+      {
+        // What's actually on screen, cropped to the island (a page capture of this transparent window can be stale).
+        const d = screen.getPrimaryDisplay();
+        const sf = d.scaleFactor;
+        const [src] = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: Math.round(d.size.width * sf), height: Math.round(d.size.height * sf) } });
+        const b = island.getBounds();
+        fs.writeFileSync(path.join(out, "island-peek-confirm.png"), src.thumbnail.crop({ x: Math.round(b.x * sf), y: Math.round(b.y * sf), width: Math.round(b.width * sf), height: Math.round(b.height * sf) }).toPNG());
+      }
+      await island.webContents.executeJavaScript(`document.getElementById("peek-allow").click(); showPeek(null);`);
       await wait(2500);
       wins[0].show();
       await wait(400);
@@ -906,6 +1214,27 @@ app.whenReady().then(() => {
       console.log("TASKS", JSON.stringify(tasks.list()));
       console.log("TASK_TEST_DONE");
     }, 2500);
+  } else if (process.env.BUDDY_VOICE_TEST) {
+    // Dev check for the speech engine, muted: the voice says a line, the recognizer hears it back, then a two-sentence reply
+    // plays through the voice page. BUDDY_VOICE_TEST_MIC=1 also opens the microphone once.
+    setTimeout(async () => {
+      voice.mute();
+      await voice.warm();
+      const line = process.env.BUDDY_VOICE_TEST;
+      let t0 = Date.now();
+      const clip = await voice.synthesize(line);
+      console.log("VOICE_SYNTH", Date.now() - t0, "ms", (clip.audio.length / clip.rate).toFixed(2), "s");
+      const ratio = clip.rate / 16000;
+      const pcm = Float32Array.from({ length: Math.floor(clip.audio.length / ratio) }, (_, i) => clip.audio[Math.floor(i * ratio)]);
+      t0 = Date.now();
+      const { text } = await voice.transcribe(pcm);
+      console.log("VOICE_HEARD", Date.now() - t0, "ms", JSON.stringify(text));
+      t0 = Date.now();
+      await voice.say(`**${line}** It's under the *Formulas* tab → Insert Function.`);
+      console.log("VOICE_SAID", Date.now() - t0, "ms");
+      if (process.env.BUDDY_VOICE_TEST_MIC) console.log("VOICE_MIC", JSON.stringify(await voice.listen()));
+      console.log("VOICE_TEST_DONE");
+    }, 1500);
   } else if (process.env.BUDDY_EXPLAINER_TEST) {
     // Dev check for the explainer renderer: BUDDY_EXPLAINER_TEST=path/to/explainer.json (show_explainer input)
     openExplainer(JSON.parse(fs.readFileSync(process.env.BUDDY_EXPLAINER_TEST, "utf8")));
