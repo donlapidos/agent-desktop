@@ -53,7 +53,18 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Build the installer and upload it to a draft release
+      # electron-builder uploads its files in parallel and, finding no release, each upload can create its own
+      # draft. Creating the draft first gives them one to share. The release tag is v<version> because that's what
+      # electron-updater reads versions from.
+      - name: Create the draft release
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release create "v$version" --draft --title "$version" --target "$GITHUB_SHA" --notes "Desktop Buddy $version"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the installer and upload it to the draft release
         run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
