@@ -28,6 +28,7 @@
     "src/policy.js",
     "src/routines.js",
     "src/settings-window.js",
+    "src/updates.js",
     "src/speakable.js",
     "src/explainer.js",
     "src/documents.js"

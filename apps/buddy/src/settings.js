@@ -58,6 +58,7 @@ export const DEFAULTS = Object.freeze({
   trustedApps: Object.freeze([]),
   blockedApps: DEFAULT_BLOCKED,
   routines: Object.freeze([]),
+  autoUpdate: true,
   launchSetupDone: false,
 });
 
@@ -67,7 +68,8 @@ export const DEFAULTS = Object.freeze({
  * @typedef {{
  *   voice: number, speed: number, talkBack: string, accent: string, appearance: string,
  *   hotkeys: Record<HotkeyName, string>, model: string, effort: string, dictateStop: string, language: string,
- *   rope: string, trustedApps: string[], blockedApps: string[], routines: Routine[], launchSetupDone: boolean,
+ *   rope: string, trustedApps: string[], blockedApps: string[], routines: Routine[], autoUpdate: boolean,
+ *   launchSetupDone: boolean,
  * }} Settings
  */
 
@@ -178,6 +180,7 @@ export function normalize(raw) {
     trustedApps: appList(r.trustedApps, DEFAULTS.trustedApps),
     blockedApps: appList(r.blockedApps, DEFAULTS.blockedApps),
     routines: routineList(r.routines),
+    autoUpdate: r.autoUpdate !== false,
     launchSetupDone: r.launchSetupDone === true,
   };
 }

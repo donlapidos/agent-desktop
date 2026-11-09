@@ -16,9 +16,13 @@ import { redeem } from "./approvals.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const exe = process.platform === "win32" ? "agent-desktop.exe" : "agent-desktop";
 
+// The installed app carries agent-desktop in its resources folder (electron-builder's extraResources); a source checkout
+// uses the repo's own build.
 export function resolveBinary() {
+  const resources = /** @type {any} */ (process).resourcesPath;
   const candidates = [
     process.env.AGENT_DESKTOP_BIN,
+    resources && path.join(resources, "bin", exe),
     path.resolve(here, "../../../target/release", exe),
     path.resolve(here, "../../../target/debug", exe),
   ].filter(Boolean);

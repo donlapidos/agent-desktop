@@ -10,6 +10,7 @@ the following third-party software, fonts and models.
 | [Electron](https://github.com/electron/electron) 45 | MIT | The app shell |
 | [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript) | Apache-2.0 | Calls to Claude, with the user's own API key |
 | [docx](https://github.com/dolanmiu/docx) | MIT | Writing Word documents |
+| [electron-updater](https://github.com/electron-userland/electron-builder) | MIT | Installing updates from GitHub releases |
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (`sherpa-onnx-node`) | Apache-2.0 | Running the speech models |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (bundled with sherpa-onnx) | MIT | Running the speech models |
 | [agent-desktop](../../README.md) | Apache-2.0 | Reading and operating apps through accessibility |

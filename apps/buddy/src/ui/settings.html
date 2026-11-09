@@ -192,6 +192,7 @@
     <button data-page="agents"><svg class="i" viewBox="0 0 16 16"><path d="M3 2.5 13 7.2 8.2 8.4 6.4 13z"/></svg>Agents</button>
     <button data-page="routines"><svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8.5" r="5.7"/><path d="M8 5.3v3.4l2.2 1.4M6 1.5h4"/></svg>Routines</button>
     <button data-page="claude"><svg class="i" viewBox="0 0 16 16"><path d="M8 1.8 13 3.8v4c0 3-2.2 5.3-5 6.4C5.2 13.1 3 10.8 3 7.8v-4z"/><path d="m6 8 1.5 1.5L10.3 6.6"/></svg>Claude &amp; privacy</button>
+    <button data-page="about"><svg class="i" viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>About &amp; updates</button>
     <div class="foot">
       <button class="link" id="feature">Request a feature</button>
       <span>Changes apply right away.</span>
@@ -283,6 +284,30 @@
       </div>
     </section>
 
+    <section id="page-about" hidden>
+      <h2>About &amp; updates</h2>
+      <p class="lede">Desktop Buddy is open source. You bring your own Anthropic API key; everything else runs on this PC.</p>
+      <div class="group">
+        <h3 id="about-version"></h3>
+        <p class="help" id="update-status"></p>
+        <div class="row" id="update-actions"></div>
+      </div>
+      <div class="group switch-row">
+        <div>
+          <h3>Check for updates automatically</h3>
+          <p class="help" style="margin:0">Buddy looks at its GitHub releases now and then and downloads a new version in the background. It installs when you restart Buddy.</p>
+        </div>
+        <button class="switch" id="auto-update" role="switch" aria-label="Check for updates automatically"></button>
+      </div>
+      <div class="group">
+        <h3>Source and licences</h3>
+        <div class="row">
+          <button class="btn" id="releases">Release notes</button>
+          <button class="btn" id="notices">Open-source licences</button>
+        </div>
+      </div>
+    </section>
+
     <section id="page-look" hidden>
       <h2>Look</h2>
       <p class="lede">Buddy's colour: its pointer, the island, the chat and task windows, and what you mark.</p>
@@ -312,7 +337,7 @@
 
     <section id="page-claude" hidden>
       <h2>Claude &amp; privacy</h2>
-      <p class="lede">Buddy thinks with your own Anthropic API key. Questions, and what's on screen when you ask, go to Anthropic; nothing else does.</p>
+      <p class="lede">Buddy thinks with your own Anthropic API key. Questions, and what's on screen when you ask, go to Anthropic. Besides that, Buddy only downloads its voice models once and checks GitHub for updates.</p>
       <div class="group">
         <h3>API key</h3>
         <div id="key"></div>
@@ -368,7 +393,7 @@
   const problems = {};
 
   // ---------- Navigation: one section at a time; the last one is remembered ----------
-  const pages = ["voice", "dictation", "look", "keys", "agents", "routines", "claude"];
+  const pages = ["voice", "dictation", "look", "keys", "agents", "routines", "claude", "about"];
   function show(page) {
     for (const p of pages) $(`page-${p}`).hidden = p !== page;
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-current", b.dataset.page === page ? "page" : "false");
@@ -808,6 +833,40 @@
   // Changes made elsewhere (the tray, a routine running) arrive here too.
   window.buddy.onSettingsChanged((state) => render(state));
 
+  // ---------- About & updates ----------
+  function renderAbout() {
+    const u = S.updates;
+    $("about-version").textContent = `Desktop Buddy ${u?.version ?? ""}`;
+    const when = u?.checkedAt ? ` Last checked ${new Date(u.checkedAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}.` : "";
+    const status = {
+      source: "Running from source: update with git.",
+      idle: "Not checked yet.",
+      checking: "Checking for updates…",
+      downloading: `Downloading ${u?.next ?? "the new version"}… ${u?.progress ?? 0}%`,
+      ready: `Version ${u?.next} is downloaded. It installs when Buddy restarts.`,
+      current: `You have the latest version.${when}`,
+      error: `${u?.error ?? "Couldn't check"}.${when}`,
+    }[u?.status ?? "source"];
+    $("update-status").textContent = status;
+    const actions = $("update-actions");
+    actions.replaceChildren();
+    if (u?.status === "ready") {
+      const restart = el("button", { className: "btn primary", textContent: "Restart and update" });
+      restart.addEventListener("click", () => window.buddy.settingsUpdateInstall());
+      actions.append(restart);
+    } else if (u && u.status !== "source") {
+      const check = el("button", { className: "btn", textContent: "Check now", disabled: u.status === "checking" || u.status === "downloading" });
+      check.addEventListener("click", () => window.buddy.settingsUpdateCheck());
+      actions.append(check);
+    }
+    const sw = $("auto-update");
+    sw.setAttribute("aria-checked", String(S.settings.autoUpdate));
+    sw.disabled = u?.status === "source";
+  }
+  $("auto-update").addEventListener("click", () => set({ autoUpdate: !S.settings.autoUpdate }));
+  $("releases").addEventListener("click", () => window.buddy.settingsReleases());
+  $("notices").addEventListener("click", () => window.buddy.settingsNotices());
+
   // ---------- Everything ----------
   function render(state) {
     S = state;
@@ -818,6 +877,7 @@
     renderAgents();
     if (!editing) renderRoutines();
     renderClaude();
+    renderAbout();
   }
 
   $("close").addEventListener("click", () => window.buddy.settingsClose());

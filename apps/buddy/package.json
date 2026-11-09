@@ -10,15 +10,90 @@
     "smoke": "node scripts/smoke.js",
     "check": "tsc -p .",
     "measure:idle": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-idle.ps1",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "dist": "electron-builder --win --publish never",
+    "dist:dir": "electron-builder --win --dir"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.5.0",
     "docx": "^9.5.1",
+    "electron-updater": "6.8.11",
     "sherpa-onnx-node": "2.0.1"
   },
   "devDependencies": {
     "electron": "^45.2.3",
+    "electron-builder": "26.18.1",
     "typescript": "5.9.3"
+  },
+  "author": "donlapidos",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/donlapidos/agent-desktop.git",
+    "directory": "apps/buddy"
+  },
+  "build": {
+    "appId": "io.github.donlapidos.desktopbuddy",
+    "productName": "Desktop Buddy",
+    "copyright": "Copyright © 2026 donlapidos",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/sherpa-onnx-node/**",
+      "node_modules/sherpa-onnx-win-x64/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../../target/release/agent-desktop.exe",
+        "to": "bin/agent-desktop.exe"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "../../LICENSE",
+        "to": "LICENSE.txt"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/buddy.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "Desktop Buddy",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Desktop-Buddy-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "donlapidos",
+        "repo": "agent-desktop",
+        "releaseType": "draft"
+      }
+    ],
+    "electronLanguages": [
+      "en-US"
+    ]
   }
 }

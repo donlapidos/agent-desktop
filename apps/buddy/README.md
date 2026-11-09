@@ -62,7 +62,32 @@ top of the screen.
 - **Do mode:** say "do it for me" and Buddy operates the app. It asks before every action
   (Allow, Allow for this task, Don't), and it points at the target while it asks.
 
-## Run
+## Install
+
+Download `Desktop-Buddy-Setup-<version>.exe` from the repository's
+[Releases](https://github.com/donlapidos/agent-desktop/releases) and run it. It installs for your Windows account only
+(no administrator prompt), adds **Desktop Buddy** to the Start menu and the desktop, and can be removed from
+Settings › Apps like any other app; your settings, key and voice models stay in `%APPDATA%\desktop-buddy`.
+
+The installer isn't code-signed (that needs a paid certificate), so Windows SmartScreen may say it "protected your PC"
+the first time: choose **More info › Run anyway**. Each release lists the installer's SHA-512 in `latest.yml`.
+
+Buddy keeps itself up to date: it checks the releases now and then, downloads a newer version in the background
+(checked against its SHA-512), and installs it when you restart Buddy or choose **Restart to update** in the tray or
+in Settings › About & updates, where automatic checks can also be turned off.
+
+## Release
+
+1. Bump `version` in `apps/buddy/package.json` and commit.
+2. Push a matching tag: `git tag buddy-v0.2.0 && git push origin buddy-v0.2.0`.
+3. `.github/workflows/buddy-release.yml` builds agent-desktop and the installer on Windows, runs the checks and tests,
+   and uploads the installer and `latest.yml` to a **draft** release `v0.2.0`.
+4. Review the draft, add notes, and publish it. Installed copies only see published releases.
+
+`npm run dist` builds the same installer locally into `dist/` (after `cargo build --release -p agent-desktop`);
+`npm run dist:dir` builds just the unpacked app, which can't update itself.
+
+## Run from source
 
 ```bash
 # 1. Build the agent-desktop CLI from this repo (from the repo root)

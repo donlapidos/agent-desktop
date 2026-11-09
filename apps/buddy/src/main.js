@@ -18,6 +18,7 @@ import {
   save as saveSettings, update as updateSettings,
 } from "./settings.js";
 import { createSettingsWindow } from "./settings-window.js";
+import { createUpdates } from "./updates.js";
 import { describe as describeSchedule, nextRun, verdict as routineVerdict } from "./routines.js";
 import os from "node:os";
 import { createVoice } from "./voice.js";
@@ -44,7 +45,14 @@ const PEEK_EVERY_MS = 800;
 const EXPLAINER = { width: 640, height: 760 };
 const CROP = { width: 1200, height: 800 }; // physical px around the pointer sent with an explain request
 
-const APP_ID = "Desktop Buddy";
+// The installed app's shortcuts carry the installer's app ID (electron-builder's appId), so the taskbar groups Buddy's
+// windows with them; a source checkout keeps the ID its own shortcuts were made with.
+const APP_ID = app.isPackaged ? "io.github.donlapidos.desktopbuddy" : "Desktop Buddy";
+
+// Settings, the API key and the voice models live in %APPDATA%\desktop-buddy for a source checkout and an installed
+// Buddy alike, whatever the installer calls the app, so installing or updating never loses them. An explicit
+// --user-data-dir (separate test copies) still wins.
+if (!app.commandLine.hasSwitch("user-data-dir")) app.setPath("userData", path.join(app.getPath("appData"), "desktop-buddy"));
 
 // One Buddy at a time: launching it again (shortcut, Start menu) opens the Ask bubble in the running one.
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -57,7 +65,7 @@ app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 if (!process.env.BUDDY_GPU) app.disableHardwareAcceleration();
 app.on("second-instance", () => summon());
 
-let tray, bubble, island, brain, tasks, voice;
+let tray, bubble, island, brain, tasks, voice, updates;
 let spokenTurn = false; // the question being answered was said out loud
 let spokenLang = "en"; // the language it was said in (detected when Settings asks for it)
 let heardLang = "en"; // the language of the last thing heard, waiting for the bubble to send it
@@ -1084,8 +1092,9 @@ const pretty = (accel) => accel.replaceAll("+", " + ");
 
 // ---------- Launching without a terminal: shortcuts and start-with-Windows ----------
 
-// Run as `electron <app dir>`, so every launcher passes the app directory to the Electron binary.
-const LAUNCH = { path: process.execPath, args: [app.getAppPath()] };
+// Installed, Buddy is its own "Desktop Buddy.exe" and the installer makes its shortcuts. From a source checkout it runs
+// as `electron <app dir>`, so every launcher passes the app directory to the Electron binary.
+const LAUNCH = app.isPackaged ? { path: process.execPath, args: [] } : { path: process.execPath, args: [app.getAppPath()] };
 
 const startsWithWindows = () => app.getLoginItemSettings(LAUNCH).openAtLogin;
 const setStartsWithWindows = (on) => app.setLoginItemSettings({ openAtLogin: on, ...LAUNCH });
@@ -1112,7 +1121,7 @@ function writeShortcuts() {
 // Once per install: put Buddy in Start and on the desktop, and start it at sign-in. Later Settings owns both.
 function firstRunSetup() {
   if (process.platform !== "win32" || settings.launchSetupDone) return;
-  writeShortcuts();
+  if (!app.isPackaged) writeShortcuts(); // the installer already made them
   setStartsWithWindows(true);
   changeSettings({ launchSetupDone: true });
 }
@@ -1238,8 +1247,9 @@ function buildTrayMenu() {
       { label: "New conversation", click: () => brain?.reset() },
       { label: "New task window", click: () => newTask() },
       { type: "separator" },
+      ...(updates?.state().status === "ready" ? [{ label: `Restart to update to ${updates.state().next}`, click: () => updates.install() }] : []),
       { label: "Settings…", click: () => settingsWindow.open() },
-      { label: "Recreate shortcuts", visible: process.platform === "win32", click: writeShortcuts },
+      { label: "Recreate shortcuts", visible: process.platform === "win32" && !app.isPackaged, click: writeShortcuts },
       { type: "separator" },
       { label: `agent-desktop: ${path.basename(resolveBinary())}`, enabled: false },
       { label: "Quit", click: () => app.quit() },
@@ -1285,6 +1295,7 @@ function settingsState() {
     key: { saved: fs.existsSync(keyFile()), fromEnv: !!process.env.ANTHROPIC_API_KEY },
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
+    updates: updates?.state() ?? null,
     routineInfo: Object.fromEntries(
       settings.routines.map((r) => [
         r.id,
@@ -1378,7 +1389,32 @@ const settingsWindow = createSettingsWindow({
   // Apps with a window open now, as suggestions for the Agents lists.
   apps: async () => [...new Set((await listWindows()).map((w) => w.app_name).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
   requestFeature,
+  checkUpdates: () => updates?.check(),
+  installUpdate: () => updates?.install(),
+  openReleases: () => shell.openExternal(RELEASES),
+  openNotices: () => shell.openPath(app.isPackaged ? path.join(process.resourcesPath, "THIRD_PARTY_NOTICES.md") : path.join(here, "../THIRD_PARTY_NOTICES.md")),
 });
+
+// ---------- App updates (updates.js) ----------
+
+const RELEASES = "https://github.com/donlapidos/agent-desktop/releases";
+let announcedUpdate = null;
+function startUpdates() {
+  updates = createUpdates({
+    enabled: () => settings.autoUpdate,
+    onChange: (state) => {
+      buildTrayMenu();
+      settingsWindow.refresh();
+      // Say so once, on the island; the tray and Settings keep offering the restart.
+      if (state.status === "ready" && announcedUpdate !== state.next) {
+        announcedUpdate = state.next;
+        if (mode === "idle") setIsland("done", `Buddy ${state.next} is ready: restart from the tray to update`);
+      }
+    },
+    trace,
+  });
+  updates.start();
+}
 ipcMain.on("open-settings", () => settingsWindow.open());
 
 app.whenReady().then(() => {
@@ -1400,6 +1436,7 @@ app.whenReady().then(() => {
   createTray();
   startTasks();
   startVoice();
+  startUpdates();
   setTimeout(checkRoutines, 10_000);
   setInterval(checkRoutines, ROUTINE_CHECK_MS);
   trackCursor();
@@ -1658,6 +1695,10 @@ app.whenReady().then(() => {
       const t0 = Date.now();
       console.log("SETTINGS_LANGUAGE", JSON.stringify({ ...(await voice.transcribe(pcm)), ms: Date.now() - t0 }));
       for (const page of ["dictation", "agents", "routines"]) await shoot(page, `settings-${page}`);
+      await updates.check();
+      await wait(4000);
+      await shoot("about", "settings-about");
+      console.log("SETTINGS_INSTALLED", JSON.stringify({ packaged: app.isPackaged, agentDesktop: resolveBinary(), userData: app.getPath("userData"), updates: updates.state() }));
       await win.webContents.executeJavaScript(`render(${JSON.stringify(settingsState())})`);
       await shoot("look", "settings-look-coral");
       await shoot("keys", "settings-keys-changed");
