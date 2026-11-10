@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { BRIDGE_TOOLS, INSTRUCTIONS, pipeName, startBridge } from "../src/bridge.js";
 
 const helper = path.resolve("src/mcp-server.js");
@@ -94,12 +95,42 @@ test("a call Claude cancels is cancelled in Buddy", async () => {
   }
 });
 
-test("with Buddy closed, Claude is told how to start it", async () => {
-  const client = await claude(tempDir());
+test("with Buddy closed, Claude still sees its tools and is told how to start it", async () => {
+  const dir = tempDir();
+  startBridge({ dir, pipe: testPipe(), run: async () => "ran" }).close();
+  assert.ok(!fs.existsSync(path.join(dir, "bridge.json")), "no token is left behind");
+  const client = await claude(dir);
   try {
+    assert.equal(client.getInstructions(), INSTRUCTIONS);
+    assert.deepEqual((await client.listTools()).tools.map((t) => t.name), BRIDGE_TOOLS.map((t) => t.name));
     const res = await client.callTool({ name: "look", arguments: {} });
     assert.match(res.content[0].text, /Buddy isn't running/);
   } finally {
     await client.close();
+  }
+});
+
+test("on a PC where Buddy never ran, Claude is told to start it once", async () => {
+  const client = await claude(tempDir());
+  try {
+    assert.match(client.getInstructions() ?? "", /hasn't run on this PC yet/);
+    assert.deepEqual((await client.listTools()).tools, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("Buddy starting after the Claude session tells Claude its tools changed, and calls reach it", async () => {
+  const dir = tempDir();
+  const client = await claude(dir);
+  const changed = new Promise((resolve) => client.setNotificationHandler(ToolListChangedNotificationSchema, () => resolve(true)));
+  const bridge = startBridge({ dir, pipe: testPipe(), run: async (name) => `ran ${name}` });
+  try {
+    assert.equal(await Promise.race([changed, new Promise((r) => setTimeout(() => r(false), 12_000))]), true);
+    assert.equal((await client.listTools()).tools.length, BRIDGE_TOOLS.length);
+    assert.deepEqual((await client.callTool({ name: "look", arguments: {} })).content, [{ type: "text", text: "ran look" }]);
+  } finally {
+    await client.close();
+    bridge.close();
   }
 });

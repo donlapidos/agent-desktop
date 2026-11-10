@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentBrain } from "./agent-brain.js";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
-import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop } from "./claude-setup.js";
+import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop, staleClaude } from "./claude-setup.js";
 import { Brain, SESSION_PREFIX, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
@@ -1111,6 +1111,22 @@ async function runForClaude(name, input, signal) {
   }
 }
 
+const claudeSpec = () => launchSpec(process.execPath, path.join(here, "mcp-server.js"));
+
+/** Adds Buddy to one of Claude's apps, or takes it out. Resolves an error message, or null. */
+async function setClaude(/** @type {"code" | "desktop"} */ which, /** @type {boolean} */ on, why = "settings") {
+  const spec = on ? claudeSpec() : null;
+  // Claude Code also gets allow rules for Buddy's look-and-point tools, so it doesn't stop to check each one.
+  const error = which === "code" ? (await setCode(spec)) ?? setCodeAllowed(allowRules(SAFE_TOOLS), on) : setDesktop(spec);
+  trace({ kind: "claude-setup", which, on, why, error });
+  return error;
+}
+
+// Claude's apps that start Buddy under an old name or from where Buddy used to be are pointed at this Buddy.
+async function repairClaude() {
+  for (const which of staleClaude(claudeSpec())) await setClaude(which, true, "repair");
+}
+
 function startClaudeBridge() {
   bridge = startBridge({
     dir: app.getPath("userData"),
@@ -1478,13 +1494,7 @@ const settingsWindow = createSettingsWindow({
   installUpdate: () => updates?.install(),
   openReleases: () => shell.openExternal(RELEASES),
   openNotices: () => shell.openPath(app.isPackaged ? path.join(process.resourcesPath, "THIRD_PARTY_NOTICES.md") : path.join(here, "../THIRD_PARTY_NOTICES.md")),
-  setClaude: async (which, on) => {
-    const spec = on ? launchSpec(process.execPath, path.join(here, "mcp-server.js")) : null;
-    // Claude Code also gets allow rules for Buddy's look-and-point tools, so it doesn't stop to check each one.
-    const error = which === "code" ? (await setCode(spec)) ?? setCodeAllowed(allowRules(SAFE_TOOLS), on) : setDesktop(spec);
-    trace({ kind: "claude-setup", which, on, error });
-    return error;
-  },
+  setClaude,
 });
 
 // ---------- App updates (updates.js) ----------
@@ -1527,6 +1537,8 @@ app.whenReady().then(() => {
   createBubble();
   createTray();
   startClaudeBridge();
+  // Only the real Buddy points Claude's apps at itself, never a test copy with its own data folder.
+  if (!app.commandLine.hasSwitch("user-data-dir")) repairClaude().catch((err) => trace({ kind: "claude-setup", why: "repair", error: String(err) }));
   startTasks();
   startVoice();
   startUpdates();

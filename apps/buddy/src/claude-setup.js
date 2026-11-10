@@ -7,7 +7,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const SERVER = "buddy";
+export const SERVER = "desktop-buddy";
+// Names Buddy was added under before; adding or removing Buddy clears them too. ("buddy" clashed with a feature of
+// the same name in the Claude app.)
+const LEGACY = ["buddy"];
+const OURS = [SERVER, ...LEGACY];
 
 /** @typedef {{ command: string, args: string[], env: Record<string, string> }} LaunchSpec */
 /** @typedef {"added" | "absent" | "missing"} SetupStatus  missing: that Claude app isn't on this PC */
@@ -22,8 +26,8 @@ export const launchSpec = (exe, script) => ({ command: exe, args: [script], env:
 export function withBuddy(config, spec) {
   const next = { ...config };
   const servers = { ...(config.mcpServers ?? {}) };
+  for (const name of OURS) delete servers[name];
   if (spec) servers[SERVER] = spec;
-  else delete servers[SERVER];
   if (Object.keys(servers).length) next.mcpServers = servers;
   else delete next.mcpServers;
   return next;
@@ -42,14 +46,29 @@ const readJson = (file) => {
   }
 };
 
+const added = (config) => OURS.some((name) => config?.mcpServers?.[name]);
+
 /** @returns {{ code: SetupStatus, desktop: SetupStatus }} */
 export function claudeStatus(paths = PATHS) {
   const code = readJson(paths.code());
-  const desktop = readJson(paths.desktop());
   return {
-    code: code ? (code.mcpServers?.[SERVER] ? "added" : "absent") : "missing",
-    desktop: fs.existsSync(path.dirname(paths.desktop())) ? (desktop?.mcpServers?.[SERVER] ? "added" : "absent") : "missing",
+    code: code ? (added(code) ? "added" : "absent") : "missing",
+    desktop: fs.existsSync(path.dirname(paths.desktop())) ? (added(readJson(paths.desktop())) ? "added" : "absent") : "missing",
   };
+}
+
+/**
+ * The Claude apps that have Buddy but would start it some other way than `spec`: under an old name, or from where
+ * Buddy used to be (a dev copy, before installing). Buddy re-adds itself to those at startup.
+ * @param {LaunchSpec} spec @returns {("code" | "desktop")[]}
+ */
+export function staleClaude(spec, paths = PATHS) {
+  const want = JSON.stringify([spec.command, ...spec.args]);
+  return /** @type {const} */ (["code", "desktop"]).filter((which) => {
+    const servers = readJson(paths[which]())?.mcpServers ?? {};
+    const have = OURS.filter((name) => servers[name]);
+    return have.length > 0 && (have.length > 1 || have[0] !== SERVER || JSON.stringify([servers[SERVER].command, ...(servers[SERVER].args ?? [])]) !== want);
+  });
 }
 
 /**
@@ -82,13 +101,14 @@ function editJson(file, change, unreadable) {
 
 /** Claude Code's permission rules for Buddy's tools that only look, read, point or show (bridge.js SAFE_TOOLS). */
 export const allowRules = (names) => names.map((n) => `mcp__${SERVER}__${n}`);
+const legacyRule = (rule) => LEGACY.some((name) => rule.startsWith(`mcp__${name}__`));
 
 /**
  * Claude Code's settings with Buddy's allow rules added (on) or taken out; every other rule and key stays.
  * @param {Record<string, any>} settings @param {string[]} rules @param {boolean} on
  */
 export function withAllowRules(settings, rules, on) {
-  const allow = (settings.permissions?.allow ?? []).filter((r) => !rules.includes(r));
+  const allow = (settings.permissions?.allow ?? []).filter((r) => !rules.includes(r) && !legacyRule(r));
   const next = { ...settings, permissions: { ...(settings.permissions ?? {}), allow: on ? [...allow, ...rules] : allow } };
   if (!next.permissions.allow.length) delete next.permissions.allow;
   if (!Object.keys(next.permissions).length) delete next.permissions;
@@ -120,7 +140,8 @@ function claudeCode(args) {
  * @param {LaunchSpec | null} spec
  */
 export async function setCode(spec) {
-  await claudeCode(["mcp", "remove", SERVER, "-s", "user"]);
+  const have = readJson(PATHS.code())?.mcpServers ?? {};
+  for (const name of OURS) if (have[name]) await claudeCode(["mcp", "remove", name, "-s", "user"]);
   if (!spec) return null;
   const env = Object.entries(spec.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
   const res = await claudeCode(["mcp", "add", "--scope", "user", SERVER, ...env, "--", spec.command, ...spec.args]);

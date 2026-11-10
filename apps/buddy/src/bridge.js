@@ -11,6 +11,9 @@ import path from "node:path";
 import { SYSTEM, TOOLS } from "./brain.js";
 
 export const BRIDGE_FILE = "bridge.json";
+// What Claude's apps are offered: written at every start and kept when Buddy closes, so a Claude session that starts
+// while Buddy is closed still lists Buddy's tools (and buddy-mcp starts Buddy on the first call).
+export const TOOLS_FILE = "claude-tools.json";
 export const pipeName = (name = os.userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_")) => `\\\\.\\pipe\\desktop-buddy-${name}`;
 
 // Buddy's own guidance from "How you help:" to the end of "Explaining:", for Claude's apps; Buddy's opening and its
@@ -42,6 +45,14 @@ export const BRIDGE_TOOLS = [...TOOLS, GET_MARKS];
 // launch_app, create_document) still goes through Claude's own check and Buddy's approval card.
 export const SAFE_TOOLS = Object.freeze(["look", "read_page", "screenshot", "list_windows", "point_at", "wait_for_user", "guide_steps", "show_explainer", "get_marks"]);
 
+// Rewriting an unchanged file would make every running buddy-mcp tell its Claude session the tools changed.
+function writeIfChanged(file, text) {
+  try {
+    if (fs.readFileSync(file, "utf8") === text) return;
+  } catch {}
+  fs.writeFileSync(file, text);
+}
+
 const sameToken = (a, b) => typeof a === "string" && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /**
@@ -53,7 +64,8 @@ const sameToken = (a, b) => typeof a === "string" && a.length === b.length && cr
 export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
   const token = crypto.randomBytes(24).toString("hex");
   const file = path.join(dir, BRIDGE_FILE);
-  fs.writeFileSync(file, JSON.stringify({ pipe, token, instructions: INSTRUCTIONS, tools: BRIDGE_TOOLS, safe: SAFE_TOOLS }), { mode: 0o600 });
+  writeIfChanged(path.join(dir, TOOLS_FILE), JSON.stringify({ instructions: INSTRUCTIONS, tools: BRIDGE_TOOLS, safe: SAFE_TOOLS }));
+  fs.writeFileSync(file, JSON.stringify({ pipe, token }), { mode: 0o600 });
   let clients = 0;
 
   const server = net.createServer((socket) => {
