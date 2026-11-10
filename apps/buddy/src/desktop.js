@@ -351,27 +351,109 @@ const hasText = (node, needle) =>
   !!node && ([node.name, node.value].some((v) => typeof v === "string" && v.toLowerCase().includes(needle)) ||
     (node.children ?? []).some((c) => hasText(c, needle)));
 
-// Polls until `text` shows up: as the title of a window of the same app (a dialog they opened) or among the
-// controls of the window they are working in (a ribbon tab, a menu, a pane). One check about every second.
-// Resolves { status: "appeared" | "timeout" | "cancelled" }; when it appeared, also the snapshot it was seen in
-// (and the window, which is a new one when the step opened a dialog), so the caller can go straight on.
+// What the user can operate in a window, ignoring values: a ribbon tab, a pane or a menu coming or going.
+export const controlShape = (node, out = new Set()) => {
+  if (node?.ref_id) out.add(`${node.role}|${node.name ?? ""}`);
+  for (const c of node?.children ?? []) controlShape(c, out);
+  return out;
+};
+export const shapeDistance = (a, b) => [...b].filter((k) => !a.has(k)).length + [...a].filter((k) => !b.has(k)).length;
+export const SHAPE_CHANGE = 6;
+
+// What the user's controls hold: selecting a cell changes Excel's Name Box, typing changes a field. A step like
+// "click E2" or "type the total" shows no new text and no new controls, so this is how a wait sees it was done.
+export const controlValues = (node, out = new Map()) => {
+  if (node?.ref_id && node.value != null && node.value !== "") out.set(`${node.role}|${node.name ?? ""}`, String(node.value));
+  for (const c of node?.children ?? []) controlValues(c, out);
+  return out;
+};
+export const valuesChanged = (a, b) => [...b].some(([k, v]) => a.has(k) && a.get(k) !== v);
+
+/**
+ * The furthest of `needles` (in step order) that shows in the tree or the window title, skipping ones that already
+ * showed when the wait began; -1 when none does.
+ * @param {string[]} needles @param {Set<string>} already @param {object | null} tree @param {string} [title]
+ */
+export function furthestStep(needles, already, tree, title) {
+  for (let i = needles.length - 1; i >= 0; i--) {
+    if (already.has(needles[i])) continue;
+    if (title?.toLowerCase().includes(needles[i]) || (tree && hasText(tree, needles[i]))) return i;
+  }
+  return -1;
+}
+
+// Names as people read them: no case, no access-key ampersands or ellipses, single spaces.
+const plainName = (s) => String(s ?? "").toLowerCase().replace(/[&…]/g, "").replace(/\.\.\.$/, "").replace(/\s+/g, " ").trim();
+
+/**
+ * The control a guide step names, by the label the user sees: the same name beats one that starts with it, which
+ * beats one that contains it, and a matching role breaks a tie. Controls scrolled out of view don't count. Resolves
+ * { node } when one control is clearly meant, { candidates } when several are equally likely (Buddy doesn't guess
+ * where to point), or null when nothing on screen has that name.
+ * @param {object} tree @param {string} target @param {string} [role]
+ */
+export function findControl(tree, target, role) {
+  const want = plainName(target);
+  if (!want) return null;
+  const wantRole = role ? String(role).toLowerCase() : null;
+  /** @type {{ node: any, rank: number }[]} */
+  const found = [];
+  const walk = (n) => {
+    if (!n) return;
+    if (n.ref_id && n.bounds && n.name && !(n.states ?? []).includes("offscreen")) {
+      const name = plainName(n.name);
+      const how = name === want ? 3 : name.startsWith(want) ? 2 : name.includes(want) ? 1 : 0;
+      if (how) found.push({ node: n, rank: how * 2 + (wantRole && String(n.role ?? "").toLowerCase().includes(wantRole) ? 1 : 0) });
+    }
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(tree);
+  if (!found.length) return null;
+  const best = Math.max(...found.map((f) => f.rank));
+  const top = found.filter((f) => f.rank === best).map((f) => f.node);
+  return top.length === 1 ? { node: top[0] } : { candidates: top };
+}
+
+// Follows the user through a guided walk-through. `steps` are texts that appear as they go (the step Buddy pointed
+// at first, then the next ones), so a user who knows the way and works ahead is caught at the furthest step they
+// reached. When none of them shows but the window clearly changed (a new dialog or title, controls that came or
+// went, a selection or a field's text that changed; seen twice in a row so a hover doesn't count), it returns "changed" so the caller can work out where they
+// are instead of pointing at a step they've passed. Texts already on screen when the wait starts never count.
+// Resolves { status: "appeared" | "changed" | "timeout" | "cancelled", why, step, window, snapshot }; `why` says what
+// changed: "window" (a new or retitled one), "controls", or "values" (a selection or text they typed).
 const windowTarget = (w) => ["--app", w.app_name, "--window-id", w.id];
 const WAIT_SNAPSHOT = ["-i", "--compact", "--include-bounds", "--max-depth", "25", "--timeout-ms", "3000"];
-export async function waitForText({ win, text, timeoutMs = 45_000, signal, session }) {
-  const needle = String(text).toLowerCase().trim();
+export async function waitForProgress({ win, steps, timeoutMs = 45_000, signal, session }) {
+  const needles = steps.map((s) => String(s).toLowerCase().trim()).filter(Boolean);
+  const read = (w) => snapshotResilient(windowTarget(w), WAIT_SNAPSHOT, { timeoutMs: 8_000, signal, session });
+  const ofApp = async () => (await listWindows()).filter((w) => w.pid === win.pid);
   const until = Date.now() + timeoutMs;
+  const first = await read(win);
+  const already = new Set(needles.filter((n) => first.ok && hasText(first.data.tree, n)));
+  const baseline = first.ok ? controlShape(first.data.tree) : null;
+  const held = first.ok ? controlValues(first.data.tree) : null;
+  const seen = new Set((await ofApp()).map((w) => `${w.id}|${w.title}`));
+  let changedReads = 0;
   while (Date.now() < until) {
-    if (signal?.aborted) return { status: "cancelled" };
-    const dialog = (await listWindows()).find((w) => w.pid === win.pid && w.title?.toLowerCase().includes(needle));
-    if (dialog) {
-      const res = await snapshotResilient(windowTarget(dialog), WAIT_SNAPSHOT, { timeoutMs: 8_000, signal, session });
-      return { status: "appeared", window: dialog, snapshot: res.ok ? res.data : null };
+    if (signal?.aborted) return { status: "cancelled", step: -1 };
+    const fresh = (await ofApp()).find((w) => !seen.has(`${w.id}|${w.title}`));
+    if (fresh) {
+      const res = await read(fresh);
+      const step = furthestStep(needles, already, res.ok ? res.data.tree : null, fresh.title);
+      return { status: step >= 0 ? "appeared" : "changed", why: "window", step, window: fresh, snapshot: res.ok ? res.data : null };
     }
-    const res = await snapshotResilient(windowTarget(win), WAIT_SNAPSHOT, { timeoutMs: 8_000, signal, session });
-    if (res.ok && hasText(res.data.tree, needle)) return { status: "appeared", window: win, snapshot: res.data };
+    const res = await read(win);
+    if (res.ok) {
+      const step = furthestStep(needles, already, res.data.tree);
+      if (step >= 0) return { status: "appeared", step, window: win, snapshot: res.data };
+      const why = baseline && shapeDistance(baseline, controlShape(res.data.tree)) >= SHAPE_CHANGE ? "controls"
+        : held && valuesChanged(held, controlValues(res.data.tree)) ? "values" : null;
+      changedReads = why ? changedReads + 1 : 0;
+      if (changedReads >= 2) return { status: "changed", why, step: -1, window: win, snapshot: res.data };
+    }
     await new Promise((r) => setTimeout(r, 500));
   }
-  return { status: signal?.aborted ? "cancelled" : "timeout" };
+  return { status: signal?.aborted ? "cancelled" : "timeout", step: -1 };
 }
 
 // ---------- Resilient snapshots ----------

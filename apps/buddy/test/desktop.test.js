@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { renderReading, renderTree } from "../src/desktop.js";
+import { controlShape, controlValues, findControl, furthestStep, valuesChanged, renderReading, renderTree, SHAPE_CHANGE, shapeDistance } from "../src/desktop.js";
 
 const at = (x, y, width = 100, height = 20) => ({ x, y, width, height });
 
@@ -64,4 +64,51 @@ test("renderReading says how much didn't fit", () => {
   const children = Array.from({ length: 50 }, (_, i) => ({ role: "statictext", name: `Paragraph ${i} `.repeat(20), bounds: at(0, i * 30) }));
   const { text } = renderReading({ role: "document", bounds: at(0, 0, 800, 600), children }, 2000);
   assert.match(text, /the page continues for about \d+ more characters/);
+});
+
+const ribbon = (...tabs) => ({ role: "window", children: tabs.map((name, i) => ({ ref_id: `@s1:e${i}`, role: "tab", name })) });
+
+test("furthestStep catches a user who worked ahead at the furthest step they reached", () => {
+  const needles = ["create table", "table design", "table style"];
+  const tree = { role: "window", children: [{ role: "tab", name: "Table Design" }] };
+  assert.equal(furthestStep(needles, new Set(), tree), 1);
+  assert.equal(furthestStep(needles, new Set(), null, "Create Table"), 0, "a dialog's title counts");
+  assert.equal(furthestStep(needles, new Set(["table design"]), tree), -1, "text that was already on screen never counts");
+});
+
+test("shapeDistance sees controls come and go but not typing or selection", () => {
+  const before = controlShape(ribbon("Home", "Insert", "Data"));
+  const typed = controlShape({ ...ribbon("Home", "Insert", "Data"), value: "Q3 total" });
+  assert.equal(shapeDistance(before, typed), 0);
+  const paneOpened = controlShape(ribbon("Home", "Insert", "Data", "Table Design", "Style 1", "Style 2", "Banded Rows", "Total Row", "Header Row"));
+  assert.ok(shapeDistance(before, paneOpened) >= SHAPE_CHANGE);
+});
+
+const control = (ref, role, name, extra = {}) => ({ ref_id: ref, role, name, bounds: at(0, 0), ...extra });
+
+test("findControl finds the control a guide step names, as the user reads it", () => {
+  const tree = { role: "window", children: [control("@s1:e1", "tab", "Data"), control("@s1:e2", "button", "Sort A to Z"), control("@s1:e3", "button", "Sor&t…")] };
+  assert.equal(findControl(tree, "data")?.node.ref_id, "@s1:e1", "case doesn't matter");
+  assert.equal(findControl(tree, "Sort")?.node.ref_id, "@s1:e3", "the same name beats one that only starts with it");
+  assert.equal(findControl(tree, "A to Z")?.node.ref_id, "@s1:e2");
+  assert.equal(findControl(tree, "Pivot"), null);
+});
+
+test("findControl won't guess between equally likely controls, and a role tells them apart", () => {
+  const tree = { role: "window", children: [control("@s1:e1", "tab", "Insert"), control("@s1:e2", "menuitem", "Insert")] };
+  assert.deepEqual(findControl(tree, "Insert")?.candidates?.map((n) => n.ref_id), ["@s1:e1", "@s1:e2"]);
+  assert.equal(findControl(tree, "Insert", "tab")?.node.ref_id, "@s1:e1");
+});
+
+test("findControl ignores controls scrolled out of view", () => {
+  const tree = { role: "window", children: [control("@s1:e1", "button", "Save", { states: ["offscreen"] }), control("@s1:e2", "button", "Save as")] };
+  assert.equal(findControl(tree, "Save")?.node.ref_id, "@s1:e2");
+});
+
+test("valuesChanged sees a new selection or typed text, and not controls coming or going", () => {
+  const sheet = (cell) => ({ role: "window", children: [{ ref_id: "@s1:e1", role: "combobox", name: "Name Box", value: cell }, { ref_id: "@s1:e2", role: "tab", name: "Data" }] });
+  const before = controlValues(sheet("A1"));
+  assert.equal(valuesChanged(before, controlValues(sheet("A1"))), false);
+  assert.equal(valuesChanged(before, controlValues(sheet("E2"))), true, "clicking E2 moves the Name Box");
+  assert.equal(valuesChanged(before, controlValues({ role: "window", children: [] })), false, "a control that went away is the shape's business");
 });

@@ -2,7 +2,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { askUser, requestApproval } from "./approvals.js";
 import { decide } from "./policy.js";
-import { observe, perform, renderReading, renderTree, snapshotResilient, waitForText } from "./desktop.js";
+import { findControl, observe, perform, renderReading, renderTree, snapshotResilient, waitForProgress } from "./desktop.js";
 import { writeDocx } from "./documents.js";
 
 /** @typedef {"low" | "medium" | "high" | "xhigh" | "max"} Effort */
@@ -26,20 +26,48 @@ export function setBrainDefaults({ model, effort }) {
 }
 const MAX_STEPS = 30;
 
-const SYSTEM = `You are Buddy, a friendly assistant that lives next to the user's cursor on their Windows desktop.
+// What Buddy says when the model call itself fails, in words an everyday user can act on. Keys are the Agent SDK's
+// error kinds; the direct engine maps its API errors onto the same ones.
+export const FAILURES = {
+  billing_error: "Your Anthropic account is out of credit. Add some at console.anthropic.com under Billing, or ask me from Claude's own app on your Claude plan instead (Settings › Claude & privacy › Use with Claude).",
+  authentication_failed: "My API key was rejected. Open settings from the tray to fix it.",
+  account_on_hold: "Your Anthropic account is on hold. Check console.anthropic.com, then ask me again.",
+  rate_limit: "I'm being rate limited. Give me a moment and try again.",
+  overloaded: "Claude is busy right now. Try again in a minute.",
+  server_error: "Claude is having trouble right now. Try again in a minute.",
+  model_not_found: "The model chosen in Settings isn't available on your account. Pick another under Claude & privacy.",
+};
+// A look taken when the bubble opened is used for a question asked within this long, and waited on at most this long.
+const PREVIEW_FRESH_MS = 60_000;
+const PREVIEW_WAIT_MS = 4_000;
+// guide_steps reads windows as deep as wait_for_user does, and gives a just-opened menu this long to draw.
+const GUIDE_SNAPSHOT = ["-i", "--compact", "--include-bounds", "--max-depth", "25", "--timeout-ms", "3000"];
+const MENU_SETTLE_MS = 400;
+
+export const SYSTEM = `You are Buddy, a friendly assistant that lives next to the user's cursor on their Windows desktop.
 You can see their apps through the accessibility tree and you have a pointer of your own.
 
 How you help:
 - Default to GUIDE mode. When the user asks how to do something, look at the screen, then use point_at to show them
   exactly where to click, one step at a time, with a short caption on each point. Let them do the clicking.
-- Walk them through it live instead of listing steps: call point_at for step 1 and wait_for_user in the SAME
-  response (point first), with text that will appear once they've done it (the ribbon tab's buttons, a menu item, a
-  dialog title such as "Create Table"). When they've done it, wait_for_user hands you the window as it is now, with
-  fresh refs; point at the next step from that (no extra look) and wait again in the same response. Keep each step
-  quick: they are waiting on you. Repeat until it's done, then reply with one short line. Your chat bubble
-  folds away while you guide so it never covers what they need to click; the pointer caption is their instruction,
-  so make it the whole step ("Click Insert", "Now Table"). If a wait times out, point again or ask in one short
-  sentence whether they're stuck; don't plough on.
+- When you can see the route, hand Buddy all of it at once with guide_steps: each step's caption, the control's
+  label as the user sees it (from the look), and the text that shows the step is done. Buddy then points at each
+  control in turn and follows the user on its own, much faster than a round trip to you per step, and comes back to
+  you only if a control isn't on screen, several share a name, or the user gets stuck. Pick up from where it says.
+  Give it the whole route in one call, including controls that only appear after an earlier step (a menu's items, a
+  dialog's buttons): Buddy finds each one when it shows up. Steps like "select cell E2" or "type the total" work too
+  (target the cell or field; Buddy sees the selection or text change). The windows Buddy's tools hand back are
+  current: read them instead of taking a screenshot unless the tree can't show what you need.
+- For a step whose control you can't name yet, walk them through it live: call point_at for step 1 and wait_for_user in the SAME
+  response (point first). Give wait_for_user steps: the text that will appear once they've done this step (the
+  ribbon tab's buttons, a menu item, a dialog title such as "Create Table"), then the texts for the next two or three
+  steps, in order. Many users know part of the way and work ahead: wait_for_user tells you the furthest step they
+  reached, or that their screen changed in a way you didn't list, and hands you the window as it is now, with fresh
+  refs. Point at the first step they haven't done yet (never one they've passed; no extra look) and wait again in
+  the same response. Keep each step quick: they are waiting on you. Repeat until it's done, then reply with one short
+  line. Your chat bubble folds away while you guide so it never covers what they need to click; the pointer caption
+  is their instruction, so make it the whole step ("Click Insert", "Now Table"). If a wait times out, point again or
+  ask in one short sentence whether they're stuck; don't plough on.
 - Switch to DO mode when the user asks you to do it for them ("do it", "just do it", "can you fill this in").
   Then use act. The user approves each action in a confirmation card; if they decline, stop and ask what they want.
 - After acting, look again to verify the effect before you claim it worked. Refs belong to one snapshot; when an
@@ -150,7 +178,7 @@ no long lists. Speak about the UI by its visible labels, never by ref ids.`;
 const str = (description) => ({ type: "string", description });
 
 /** @type {Anthropic.Beta.BetaTool[]} */
-const TOOLS = [
+export const TOOLS = [
   {
     name: "look",
     description:
@@ -226,16 +254,50 @@ const TOOLS = [
     },
   },
   {
-    name: "wait_for_user",
+    name: "guide_steps",
     description:
-      "In guide mode, wait for the user to do the step you just pointed at: returns when the given text appears in their window (a button, tab, menu item or pane that the step reveals) or as the title of a new window of that app (a dialog). Times out after the given seconds if they don't.",
+      "Guide mode, fast: walk the user through a whole task. Buddy points at each step's control in turn and follows them as they click (also when they work ahead or a dialog opens), on its own, without a call back to you per step. Returns when they finish, or early with the window as it is when a control can't be found, several controls share the name, or they seem stuck.",
     input_schema: {
       type: "object",
       properties: {
-        text: str("Text that will be on screen once they've done the step, e.g. 'Create Table' or 'PivotTable Fields'. Pick something that is NOT already showing."),
+        steps: {
+          type: "array",
+          description: "Every step, in order.",
+          items: {
+            type: "object",
+            properties: {
+              caption: str("The instruction shown beside the pointer, the whole step in a few words: 'Click Data', 'Now Sort'."),
+              target: str("The control's label exactly as the user sees it on screen (from your look), e.g. 'Data' or 'Sort A to Z'."),
+              role: str("Optional, to tell same-named controls apart: tab, button, menuitem, checkbox, listitem..."),
+              done_when: {
+                type: "array",
+                items: { type: "string" },
+                description: "Text that appears once this step is done and is NOT on screen now: a ribbon group, a menu item, a dialog title.",
+              },
+            },
+            required: ["caption", "target", "done_when"],
+          },
+        },
+        seconds_per_step: { type: "number", description: "How long to wait on one step before checking back with you, 10-120. Default 60." },
+      },
+      required: ["steps"],
+    },
+  },
+  {
+    name: "wait_for_user",
+    description:
+      "In guide mode, follow the user through the steps: returns when the text of the step you pointed at, or of a later step, appears in their window (a button, tab, menu item or pane) or as the title of a new window of that app (a dialog); or when their window changed in a way none of the texts covers. Says which step they reached and hands back the window as it is now. Times out after the given seconds if nothing happens.",
+    input_schema: {
+      type: "object",
+      properties: {
+        steps: {
+          type: "array",
+          items: { type: "string" },
+          description: "In order: the text that will be on screen once they've done the step you pointed at, then the texts for the next two or three steps, e.g. ['Table Design', 'Create Table', 'Table Style']. Pick texts that are NOT already showing.",
+        },
         seconds: { type: "number", description: "How long to wait, 10-120. Default 45." },
       },
-      required: ["text"],
+      required: ["steps"],
     },
   },
   {
@@ -447,6 +509,7 @@ const spokenNote = (lang) =>
  *   trace?: (entry: object) => void,
  *   documentsDir?: string,
  *   openFile?: (file: string) => Promise<string>,
+ *   agentDir?: string,
  * }} BrainUI
  */
 
@@ -456,9 +519,16 @@ export class Brain {
    */
   constructor(ui) {
     this.ui = ui;
-    this.client = new Anthropic(ui.apiKey ? { apiKey: ui.apiKey } : {});
+    /** @type {Anthropic | undefined} */
+    this.anthropic = undefined;
     this.session = newSession();
     this.reset();
+  }
+
+  // Made on first use: a Brain that only runs tools for Claude's own apps (bridge.js) has no key and calls no model.
+  get client() {
+    this.anthropic ??= new Anthropic(this.ui.apiKey ? { apiKey: this.ui.apiKey } : {});
+    return this.anthropic;
   }
 
   reset() {
@@ -486,10 +556,40 @@ export class Brain {
     this.abort?.abort();
   }
 
+  async look(input) {
+    const extra = ["-i", "--compact", "--include-bounds", ...(input.skeleton && !input.root ? ["--skeleton"] : [])];
+    const res = input.root
+      ? await observe(["snapshot", "--root", input.root, ...extra], { timeoutMs: 20_000, session: this.session })
+      : await snapshotResilient(this.windowArgs(input), extra, { timeoutMs: 20_000, session: this.session });
+    if (!res.ok) return trimEnvelope(res);
+    const { text } = renderTree(res.data.tree, this.bounds, undefined, this.labels);
+    this.noteApp(res.data.tree, input.root ? this.refApps.get(input.root) : res.data.app ?? input.app ?? this.target?.app_name);
+    const unreadable = res.data.unreadable_regions ? ` · ${res.data.unreadable_regions} region(s) unreadable, take a screenshot if what you need isn't here` : "";
+    const head = `window: ${res.data.window?.title ?? res.data.app ?? "?"} · ${res.data.ref_count ?? 0} refs${res.data.complete === false ? " · partial" : ""}${unreadable}`;
+    return `${head}\n${text}`;
+  }
+
+  // Reads the user's window while they type their question, so the answer can start from it instead of spending
+  // its first rounds looking. Called when the bubble opens; ask() uses it if it's for the same window and fresh.
+  glance(target) {
+    if (!target) return;
+    this.preview = { id: target.id, at: Date.now(), text: this.look({ app: target.app_name, window_id: target.id }).catch(() => null) };
+  }
+
+  async previewFor(target) {
+    const p = this.preview;
+    this.preview = null;
+    if (!p || !target || p.id !== target.id || Date.now() - p.at > PREVIEW_FRESH_MS) return null;
+    const text = await Promise.race([p.text, new Promise((r) => setTimeout(() => r(null), PREVIEW_WAIT_MS))]);
+    return typeof text === "string" && text.startsWith("window:") ? text : null;
+  }
+
   // `spoken` marks a question said out loud; `lang` is the language it was said in (two letters), when not English.
-  ask(text, target, { spoken = false, lang = "en" } = {}) {
+  async ask(text, target, { spoken = false, lang = "en" } = {}) {
     this.log.push({ role: "user", text });
-    return this.run(target, `${describeTarget(target)}\n\n${text}${spoken ? spokenNote(lang) : ""}`);
+    const seen = await this.previewFor(target);
+    const window = seen ? `\n\nTheir window when they called you (already looked; its refs work, so skip your first look):\n${seen}` : "";
+    return this.run(target, `${describeTarget(target)}${window}\n\n${text}${spoken ? spokenNote(lang) : ""}`);
   }
 
   // The user highlighted things on screen with the marker and asked about them.
@@ -544,8 +644,9 @@ export class Brain {
       return reply;
     } catch (err) {
       if (this.abort.signal.aborted) return "Okay, stopped.";
-      if (err instanceof Anthropic.AuthenticationError) return "My API key was rejected. Open settings from the tray to fix it.";
-      if (err instanceof Anthropic.RateLimitError) return "I'm being rate limited. Give me a moment and try again.";
+      if (err instanceof Anthropic.AuthenticationError) return FAILURES.authentication_failed;
+      if (err instanceof Anthropic.RateLimitError) return FAILURES.rate_limit;
+      if (err instanceof Anthropic.APIError && /credit balance/i.test(err.message)) return FAILURES.billing_error;
       if (err instanceof Anthropic.APIError) return `The model call failed (${err.status}).`;
       throw err;
     } finally {
@@ -691,19 +792,9 @@ export class Brain {
 
   async runTool(name, input) {
     switch (name) {
-      case "look": {
+      case "look":
         this.ui.status("Looking…");
-        const extra = ["-i", "--compact", "--include-bounds", ...(input.skeleton && !input.root ? ["--skeleton"] : [])];
-        const res = input.root
-          ? await observe(["snapshot", "--root", input.root, ...extra], { timeoutMs: 20_000, session: this.session })
-          : await snapshotResilient(this.windowArgs(input), extra, { timeoutMs: 20_000, session: this.session });
-        if (!res.ok) return trimEnvelope(res);
-        const { text } = renderTree(res.data.tree, this.bounds, undefined, this.labels);
-        this.noteApp(res.data.tree, input.root ? this.refApps.get(input.root) : res.data.app ?? input.app ?? this.target?.app_name);
-        const unreadable = res.data.unreadable_regions ? ` · ${res.data.unreadable_regions} region(s) unreadable, take a screenshot if what you need isn't here` : "";
-        const head = `window: ${res.data.window?.title ?? res.data.app ?? "?"} · ${res.data.ref_count ?? 0} refs${res.data.complete === false ? " · partial" : ""}${unreadable}`;
-        return `${head}\n${text}`;
-      }
+        return this.look(input);
       case "read_page": {
         this.ui.status("Reading the page…");
         const res = await snapshotResilient(
@@ -772,29 +863,106 @@ export class Brain {
         const verb = `${input.action[0].toUpperCase()}${input.action.slice(1)}`;
         return this.operate({ kind: input.action, app: input.app, args, headed: true, summary: `${verb} ${input.app.replace(/\.exe$/i, "")}` });
       }
+      case "guide_steps":
+        return this.guideSteps(input);
       case "wait_for_user": {
         if (!this.target) return "I don't know which window they're working in; look first.";
-        if (!input.text?.trim()) return "wait_for_user needs text.";
+        const steps = (Array.isArray(input.steps) ? input.steps : [input.text]).filter((s) => typeof s === "string" && s.trim());
+        if (!steps.length) return "wait_for_user needs steps.";
         const seconds = Math.min(120, Math.max(10, Number(input.seconds) || 45));
         this.ui.status("Your turn: go ahead…");
-        const result = await waitForText({ win: this.target, text: input.text, timeoutMs: seconds * 1000, signal: this.abort.signal, session: this.session });
-        if (result.status === "appeared") {
-          const done = `They did it: "${input.text}" is on screen now.`;
-          if (!result.snapshot) return `${done} Look again before pointing at the next step.`;
-          const { text } = renderTree(result.snapshot.tree, this.bounds, undefined, this.labels);
-          this.noteApp(result.snapshot.tree, result.window?.app_name);
-          const w = result.window;
-          const where = w.id === this.target.id ? "their window" : `a new window "${w.title}" (window_id ${w.id})`;
-          return `${done} Here is ${where} now; point at the next step with these refs:\n${text}`;
-        }
+        const result = await waitForProgress({ win: this.target, steps, timeoutMs: seconds * 1000, signal: this.abort.signal, session: this.session });
         if (result.status === "cancelled") return "The user stopped.";
-        return `After ${seconds}s "${input.text}" still isn't showing; they may be stuck or did something else.`;
+        if (result.status === "timeout") return `After ${seconds}s nothing you listed is showing and their window hasn't changed; they may be stuck.`;
+        const done = result.status === "changed"
+          ? result.why === "values"
+            ? "They selected something or typed: a selection or a field's text changed. Work out from the window below which step that was."
+            : "Their window changed, but none of the texts you listed appeared: they may be ahead of you or have gone another way. Work out from the window below where they are."
+          : result.step === 0
+            ? `They did it: "${steps[0]}" is on screen now.`
+            : `They're ahead of you: "${steps[result.step]}" (step ${result.step + 1} of the ${steps.length} you listed) is on screen, so they've done the steps up to it.`;
+        if (!result.snapshot) return `${done} Look again before pointing at the next step.`;
+        const { text } = renderTree(result.snapshot.tree, this.bounds, undefined, this.labels);
+        this.noteApp(result.snapshot.tree, result.window?.app_name);
+        const w = result.window;
+        const where = w.id === this.target.id ? "their window" : `a new window "${w.title}" (window_id ${w.id})`;
+        return `${done} Here is ${where} now; point at the first step they haven't done yet, with these refs:\n${text}`;
       }
       case "act":
         return this.act(input);
       default:
         return `Unknown tool ${name}.`;
     }
+  }
+
+  // guide_steps: points at each step's control and follows the user, locally, until they finish or Buddy needs Claude.
+  async guideSteps(input) {
+    const steps = (Array.isArray(input.steps) ? input.steps : []).filter((s) => typeof s?.target === "string" && s.target.trim());
+    if (!steps.length) return "guide_steps needs steps, each with a target.";
+    if (!this.target) return "I don't know which window they're working in; look first.";
+    const seconds = Math.min(120, Math.max(10, Number(input.seconds_per_step) || 60));
+    const signal = this.abort?.signal;
+    const doneSoFar = (i) => (i ? `They did steps 1-${i} of ${steps.length}.` : `They haven't started yet.`);
+    // As deep as the waits read: menus and their items sit far down in apps like Excel.
+    const read = (w) => snapshotResilient(this.windowArgs({ app: w.app_name, window_id: w.id }), GUIDE_SNAPSHOT, { timeoutMs: 20_000, session: this.session });
+    let win = this.target;
+    let i = 0;
+    while (i < steps.length) {
+      if (signal?.aborted) return "The user stopped.";
+      const step = steps[i];
+      // A step can open a dialog; once it closes, the steps carry on in their own window.
+      let res = await read(win);
+      if (!res.ok && win !== this.target) {
+        win = this.target;
+        res = await read(win);
+      }
+      if (!res.ok) return `${doneSoFar(i)} Couldn't read their window at step ${i + 1}: ${trimEnvelope(res)}`;
+      let match = findControl(res.data.tree, step.target, step.role);
+      // A menu the last step opened may still be drawing: one more look a moment later before asking Claude.
+      if (!match) {
+        await new Promise((r) => setTimeout(r, MENU_SETTLE_MS));
+        const again = await read(win);
+        if (again.ok) {
+          res = again;
+          match = findControl(res.data.tree, step.target, step.role);
+        }
+      }
+      const { text } = renderTree(res.data.tree, this.bounds, undefined, this.labels);
+      this.noteApp(res.data.tree, win.app_name);
+      this.ui.trace?.({ kind: "guide-step", step: i + 1, of: steps.length, match: match?.node ? "one" : match ? "several" : "none" });
+      if (!match?.node) {
+        const why = match
+          ? `several controls are called "${step.target}" (${match.candidates.map((c) => c.ref_id).join(", ")})`
+          : `nothing called "${step.target}" is on screen`;
+        return `${doneSoFar(i)} At step ${i + 1} ("${step.caption}") ${why}. Point at the right one yourself, then call guide_steps again with the steps that are left. Their window now:\n${text}`;
+      }
+      await this.ui.point(match.node.bounds, step.caption);
+      this.ui.status(`Step ${i + 1} of ${steps.length}: your turn`);
+      // Listen for this step and every later one, so a user who works ahead is caught where they are.
+      const needles = [];
+      const stepOf = [];
+      for (let j = i; j < steps.length; j++) {
+        for (const t of [].concat(steps[j].done_when ?? [])) {
+          if (typeof t === "string" && t.trim()) {
+            needles.push(t);
+            stepOf.push(j);
+          }
+        }
+      }
+      const r = await waitForProgress({ win, steps: needles, timeoutMs: seconds * 1000, signal, session: this.session });
+      if (r.status === "cancelled") return "The user stopped.";
+      if (r.status === "timeout") return `${doneSoFar(i)} After ${seconds}s they still haven't done step ${i + 1} ("${step.caption}"); Buddy is pointing at it. Ask in one short line whether they're stuck.`;
+      if (r.window && r.window.id !== win.id) win = r.window;
+      if (r.status === "appeared") {
+        i = stepOf[r.step] + 1;
+        continue;
+      }
+      // Their window changed in a way no done_when covers. A new selection or typed text means this step was the click
+      // or the typing; otherwise they did it if its control has gone, and if it's still there, point at it again.
+      const still = r.why !== "values" && r.snapshot ? findControl(r.snapshot.tree, step.target, step.role) : null;
+      if (!still) i++;
+    }
+    return `They finished all ${steps.length} steps.`;
   }
 
   async act(input) {

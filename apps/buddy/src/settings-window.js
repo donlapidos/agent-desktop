@@ -25,6 +25,7 @@ const SIZE = { width: 640, height: 600 };
  *   installUpdate: () => void,                              // restart into a downloaded update
  *   openReleases: () => void,
  *   openNotices: () => void,                                // the third-party licences
+ *   setClaude: (which: "code" | "desktop", on: boolean) => Promise<string | null>, // Use with Claude; an error, or null
  * }} deps
  */
 export function createSettingsWindow(deps) {
@@ -89,6 +90,10 @@ export function createSettingsWindow(deps) {
   handle("settings-update-install", () => deps.installUpdate());
   handle("settings-releases", () => deps.openReleases());
   handle("settings-notices", () => deps.openNotices());
+  handle("settings-claude", async (which, on) => {
+    if (which !== "code" && which !== "desktop") throw new Error("Not a Claude app");
+    return { error: await deps.setClaude(which, !!on), state: deps.state() };
+  });
   handle("settings-close", () => win?.close());
   handle("settings-minimize", () => win?.minimize());
 

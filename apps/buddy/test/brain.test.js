@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Brain } from "../src/brain.js";
+import { Brain, FAILURES } from "../src/brain.js";
 
 // A Brain wired to a fake UI. No request reaches the API or the desktop in these tests: every approval is declined.
 function brain(confirm = async () => "deny") {
@@ -98,4 +98,10 @@ test("a cancelled answer leaves no tool call without a result", () => {
   b.messages.push({ role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "act", input: {} }] });
   b.closeDanglingToolUse();
   assert.deepEqual(b.messages.at(-1), { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "Cancelled by the user." }] });
+});
+
+test("model failures are told in words the user can act on", () => {
+  assert.match(FAILURES.billing_error, /out of credit/);
+  assert.match(FAILURES.billing_error, /console\.anthropic\.com/);
+  for (const text of Object.values(FAILURES)) assert.doesNotMatch(text, /\b(4\d\d|5\d\d)\b|error/i, "no status codes or jargon");
 });

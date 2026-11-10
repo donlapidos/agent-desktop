@@ -6,6 +6,9 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AgentBrain } from "./agent-brain.js";
+import { SAFE_TOOLS, startBridge } from "./bridge.js";
+import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop } from "./claude-setup.js";
 import { Brain, SESSION_PREFIX, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
@@ -419,6 +422,7 @@ async function summon() {
   if (mode === "working" || mode === "reading-marks") return showBubble({ focus: false });
   if (Date.now() - lastAskAt > IDLE_RESET_MS) brain?.reset();
   target = await foregroundWindow(ownPids());
+  brain?.glance(target);
   focusPoint = cursor();
   bubble.webContents.send("summon", {
     target: target ? `${target.app_name} — ${target.title}` : null,
@@ -740,7 +744,7 @@ function openExplainer(explainer, { near = cursor(), observed = null } = {}) {
 // ---------- IPC ----------
 
 ipcMain.handle("ask", async (_e, text, opts = {}) => {
-  if (!brain) return { reply: "Add your Anthropic API key first." };
+  if (!brain) return { reply: "Add your Anthropic API key first (Settings › Claude & privacy). No key? Ask me from Claude's own app on your Claude plan instead: Use with Claude, in the same place." };
   // Typed while the mic was open: the typing wins.
   if (mode === "listening") voice.cancelListening();
   else if (mode !== "idle") return { reply: BUSY[mode] };
@@ -1026,6 +1030,8 @@ function clearOldSessions() {
 
 // Where create_document saves, and how it opens the result (Word, or whatever opens .docx here).
 const documentsDir = () => path.join(app.getPath("documents"), "Buddy");
+// Spike: BUDDY_ENGINE=sdk runs conversations on the Claude Agent SDK (src/agent-brain.js).
+const makeEngine = (ui) => (process.env.BUDDY_ENGINE === "sdk" ? new AgentBrain({ ...ui, agentDir: path.join(app.getPath("userData"), "agent") }) : new Brain(ui));
 const openFile = (file) => shell.openPath(file);
 
 // The bubble's plates open beside what the user pointed at and say which app it was in.
@@ -1037,8 +1043,86 @@ function bubbleExplain(plate) {
 function startBrain() {
   const apiKey = loadApiKey();
   brain = apiKey
-    ? new Brain({ apiKey, point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
+    ? makeEngine({ apiKey, point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
     : null;
+}
+
+// ---------- Use with Claude: Buddy's tools for Claude's own apps (bridge.js) ----------
+
+// The chat apps the user talks to Claude in; the window they want help with is never one of these.
+const CLIENT_APPS = /^(claude|windowsterminal|code|cursor)\.exe$/i;
+// After this long without a call from Claude, "Allow for this task" lapses: the next request is a new task.
+const CLAUDE_TASK_GAP_MS = 120_000;
+const LOOKS_AT_WINDOW = new Set(["look", "read_page", "screenshot"]);
+let bridge = null;
+let claudeBrain = null;
+let claudeLastCall = 0;
+let claudeSessions = 0;
+
+// The window the user works in while they chat with Claude: the frontmost one that isn't Buddy or the chat itself.
+async function userWindow() {
+  const own = ownPids();
+  return (await listWindows()).find((w) => !own.includes(w.pid) && !CLIENT_APPS.test(w.app_name ?? "")) ?? null;
+}
+
+function marksForClaude() {
+  if (!pendingMarks) return "The user hasn't marked anything yet. They can press Ctrl+Alt+M and draw over what they mean.";
+  claudeBrain.marks = new Map(pendingMarks.marks.map((m) => [m.n, m.bounds]));
+  claudeBrain.target = pendingMarks.target ?? claudeBrain.target;
+  const lines = pendingMarks.marks.map((m) => {
+    const under = m.elements.length
+      ? m.elements.map((e) => `${e.path}${e.value ? ` (text: ${JSON.stringify(e.value.slice(0, 200))})` : ""}`).join("; ")
+      : "no accessibility info; rely on the image";
+    return `Mark ${m.n}: under the stroke: ${under}`;
+  });
+  return [
+    { type: "image", source: { type: "base64", media_type: "image/png", data: pendingMarks.image } },
+    { type: "text", text: `The image shows the area the user marked, with their translucent blue strokes numbered at their start.\n${lines.join("\n")}` },
+  ];
+}
+
+/** @param {string} name @param {any} input @param {AbortSignal} signal */
+async function runForClaude(name, input, signal) {
+  claudeBrain ??= new Brain({
+    point: (bounds, caption) => {
+      const shown = point(bounds, caption, "claude");
+      releaseLater("claude", 60_000);
+      return shown;
+    },
+    confirm,
+    status: (text) => setIsland("busy", oneLine(`Claude: ${text}`)),
+    explain: (plate) => openExplainer(plate, { near: cursor(), observed: claudeBrain?.target ?? null }),
+    trace,
+    documentsDir: documentsDir(),
+    openFile,
+  });
+  if (Date.now() - claudeLastCall > CLAUDE_TASK_GAP_MS) claudeBrain.standing = { allowed: false };
+  claudeLastCall = Date.now();
+  if ((LOOKS_AT_WINDOW.has(name) && !input.app && !input.root) || !claudeBrain.target) claudeBrain.target = await userWindow();
+  const abort = new AbortController();
+  signal.addEventListener("abort", () => abort.abort(), { once: true });
+  claudeBrain.abort = abort;
+  try {
+    return name === "get_marks" ? marksForClaude() : await claudeBrain.runTool(name, input);
+  } finally {
+    setTimeout(() => {
+      if (mode === "idle" && !approval && Date.now() - claudeLastCall > 1000) restIsland();
+    }, 1500);
+  }
+}
+
+function startClaudeBridge() {
+  bridge = startBridge({
+    dir: app.getPath("userData"),
+    run: runForClaude,
+    trace,
+    onClients: (n) => {
+      trace({ kind: "bridge-clients", n });
+      // Say so once when a Claude session starts using Buddy; tool calls then show on the island as "Claude: …".
+      if (n > claudeSessions && mode === "idle" && !approval) setIsland("done", "Claude is using Buddy");
+      claudeSessions = n;
+    },
+  });
 }
 
 // ---------- Tasks: agents with their own windows, tucked into island chips ----------
@@ -1049,7 +1133,7 @@ function startTasks() {
     icon: ICON,
     makeBrain: (ui) => {
       const apiKey = loadApiKey();
-      return apiKey ? new Brain({ apiKey, trace, documentsDir: documentsDir(), openFile, ...ui }) : null;
+      return apiKey ? makeEngine({ apiKey, trace, documentsDir: documentsDir(), openFile, ...ui }) : null;
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,
@@ -1295,6 +1379,7 @@ function settingsState() {
     key: { saved: fs.existsSync(keyFile()), fromEnv: !!process.env.ANTHROPIC_API_KEY },
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
+    claude: claudeStatus(),
     updates: updates?.state() ?? null,
     routineInfo: Object.fromEntries(
       settings.routines.map((r) => [
@@ -1393,6 +1478,13 @@ const settingsWindow = createSettingsWindow({
   installUpdate: () => updates?.install(),
   openReleases: () => shell.openExternal(RELEASES),
   openNotices: () => shell.openPath(app.isPackaged ? path.join(process.resourcesPath, "THIRD_PARTY_NOTICES.md") : path.join(here, "../THIRD_PARTY_NOTICES.md")),
+  setClaude: async (which, on) => {
+    const spec = on ? launchSpec(process.execPath, path.join(here, "mcp-server.js")) : null;
+    // Claude Code also gets allow rules for Buddy's look-and-point tools, so it doesn't stop to check each one.
+    const error = which === "code" ? (await setCode(spec)) ?? setCodeAllowed(allowRules(SAFE_TOOLS), on) : setDesktop(spec);
+    trace({ kind: "claude-setup", which, on, error });
+    return error;
+  },
 });
 
 // ---------- App updates (updates.js) ----------
@@ -1434,6 +1526,7 @@ app.whenReady().then(() => {
   createIsland();
   createBubble();
   createTray();
+  startClaudeBridge();
   startTasks();
   startVoice();
   startUpdates();
@@ -1711,4 +1804,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", (e) => e.preventDefault());
-app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+  bridge?.close();
+});

@@ -337,11 +337,17 @@
 
     <section id="page-claude" hidden>
       <h2>Claude &amp; privacy</h2>
-      <p class="lede">Buddy thinks with your own Anthropic API key. Questions, and what's on screen when you ask, go to Anthropic. Besides that, Buddy only downloads its voice models once and checks GitHub for updates.</p>
+      <p class="lede">Buddy thinks with your own Anthropic API key, or works inside Claude's own apps on your Claude plan. Questions, and what's on screen when you ask, go to Anthropic. Besides that, Buddy only downloads its voice models once and checks GitHub for updates.</p>
       <div class="group">
         <h3>API key</h3>
         <div id="key"></div>
         <p class="problem" id="key-problem"></p>
+      </div>
+      <div class="group">
+        <h3>Use with Claude</h3>
+        <p class="help">No API key? Chat in Claude's own apps on your Claude plan, and Claude can use Buddy to read your screen, point the way, explain things and, with your OK, act.</p>
+        <div id="claude-apps"></div>
+        <p class="problem" id="claude-problem"></p>
       </div>
       <div class="group">
         <h3>Model</h3>
@@ -616,7 +622,7 @@
         row.append(cancel);
       }
       box.append(
-        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : "No key yet. Buddy can't answer until you add one."),
+        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : "No key yet. Buddy's own chat needs one; Use with Claude, below, doesn't."),
         row,
         el("p", { className: "note", textContent: "Get one at console.anthropic.com. It's stored encrypted with Windows and never shown again." }),
       );
@@ -637,6 +643,7 @@
     $("effort-fixed").hidden = !S.fixed.effort;
 
     $("startup").setAttribute("aria-checked", String(S.startsWithWindows));
+    renderClaudeApps();
 
     const n = S.data.explainers;
     $("explainers-count").textContent = n ? ` ${n} plate${n === 1 ? "" : "s"}, in your data folder.` : " None yet.";
@@ -658,6 +665,33 @@
     clearLog.addEventListener("click", async () => render(await window.buddy.settingsClear("log")));
     $("log-actions").replaceChildren(clearLog);
   }
+  const CLAUDE_APPS = [
+    { id: "code", name: "Claude Code", added: "Added. New Claude Code sessions can use Buddy, and Claude won't stop to check before Buddy looks or points." },
+    { id: "desktop", name: "Claude desktop app", added: "Added. Quit and reopen the Claude app to pick it up." },
+  ];
+  let claudeBusy = null;
+
+  function renderClaudeApps() {
+    $("claude-apps").replaceChildren(...CLAUDE_APPS.map((a) => {
+      const status = S.claude[a.id];
+      const text = status === "added" ? a.added : status === "missing" ? "Not on this PC." : "Not added yet.";
+      const btn = el("button", {
+        className: status === "added" ? "btn" : "btn primary",
+        textContent: claudeBusy === a.id ? "Working…" : status === "added" ? "Remove" : "Add Buddy",
+        disabled: status === "missing" || !!claudeBusy,
+      });
+      btn.addEventListener("click", async () => {
+        claudeBusy = a.id;
+        renderClaudeApps();
+        const res = await window.buddy.settingsClaude(a.id, status !== "added");
+        claudeBusy = null;
+        $("claude-problem").textContent = res.error ?? "";
+        render(res.state);
+      });
+      return el("div", { className: "data-row" }, el("div", {}, el("b", { textContent: a.name }), el("span", { textContent: ` ${text}` })), btn);
+    }));
+  }
+
   $("startup").addEventListener("click", async () => render(await window.buddy.settingsStartup(!S.startsWithWindows)));
   $("open-data").addEventListener("click", () => window.buddy.settingsOpenData());
 
