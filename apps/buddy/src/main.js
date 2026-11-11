@@ -174,6 +174,16 @@ function startActivity() {
     onChange: () => settingsWindow?.refresh(),
   });
 }
+// Shows the user what an answer made: one file opens in its usual app, several open their folder with one selected.
+async function revealMade(/** @type {string[]} */ files) {
+  const there = files.filter((f) => fs.existsSync(f));
+  if (!there.length) return;
+  if (there.length > 1) return shell.showItemInFolder(there.at(-1) ?? there[0]);
+  const error = await shell.openPath(there[0]);
+  if (error) shell.showItemInFolder(there[0]);
+  trace({ kind: "revealed", files: there.length, error: error || null });
+}
+
 const recordChange = (/** @type {Omit<import("./activity.js").Change, "id" | "at">} */ change) => {
   activity?.add(change);
   trace({ kind: "activity", what: change.kind });
@@ -1211,7 +1221,7 @@ const providerUI = () => ({ apiKey: loadApiKey() ?? "", provider: currentProvide
 
 function startBrain() {
   brain = providerReady()
-    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, openFile })
+    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, reveal: revealMade, openFile })
     : null;
 }
 
@@ -1320,7 +1330,7 @@ function startTasks() {
     here,
     icon: ICON,
     makeBrain: (ui) => {
-      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, openFile, ...ui }) : null;
+      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, reveal: revealMade, openFile, ...ui }) : null;
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,

@@ -95,3 +95,34 @@ test("an old version that's no longer kept is said so, and nothing changes", asy
   assert.match((await activity.undo(replaced.id)).message, /no longer kept/);
   assert.equal(fs.readFileSync(path.join(places.workDir, "x.txt"), "utf8"), "2");
 });
+
+test("when an answer finishes, Buddy shows the files it made, not the ones it only changed", async () => {
+  const { Brain, setBrainDefaults } = await import("../src/brain.js");
+  const { useCapsStore } = await import("../src/providers.js");
+  const docs = fs.mkdtempSync(path.join(os.tmpdir(), "buddy-docs-"));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), "buddy-data-"));
+  fs.writeFileSync(path.join(docs, "old.txt"), "old");
+  const call = (name, args) => ({ choices: [{ delta: { tool_calls: [{ index: 0, id: `c_${name}_${Math.random()}`, function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }] });
+  const text = (t) => ({ choices: [{ delta: { content: t }, finish_reason: "stop" }] });
+  const realFetch = globalThis.fetch;
+  setBrainDefaults({ model: "claude-opus-5-5", effort: "low", providerModels: { custom: "scripted" } });
+  useCapsStore({}, () => {});
+  const runWith = async (script) => {
+    let i = 0;
+    globalThis.fetch = async () => new Response(`data: ${JSON.stringify(script[i++] ?? text("Done."))}\n\ndata: [DONE]\n\n`, { status: 200 });
+    const revealed = [];
+    const brain = new Brain({ provider: "custom", baseURL: "http://127.0.0.1:9/v1", apiKey: "", point: async () => {}, confirm: async () => "allow", status: () => {}, documentsDir: docs, dataDir: data, reveal: (files) => revealed.push(files) });
+    await brain.run(null, "go");
+    return revealed;
+  };
+  try {
+    assert.deepEqual(await runWith([call("write_file", { path: "Shopping list.txt", content: "eggs" }), text("Made your list.")]), [[path.join(fs.realpathSync.native(docs), "Shopping list.txt")]]);
+    assert.deepEqual(await runWith([call("edit_file", { path: "old.txt", old_text: "old", new_text: "new" }), text("Changed it.")]), [], "changed files aren't opened");
+    const two = await runWith([call("write_file", { path: "a.txt", content: "a" }), call("write_file", { path: "b.txt", content: "b" }), text("Made two.")]);
+    assert.equal(two.length, 1, "shown once, at the end");
+    assert.equal(two[0].length, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+    setBrainDefaults({ model: "claude-opus-5-5", effort: "medium" });
+  }
+});

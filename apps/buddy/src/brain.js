@@ -539,6 +539,7 @@ const spokenNote = (lang) =>
  *   dataDir?: string,
  *   record?: (change: Omit<import("./activity.js").Change, "id" | "at">) => void,
  *   source?: string,
+ *   reveal?: (files: string[]) => Promise<void> | void,
  *   openFile?: (file: string) => Promise<string>,
  *   agentDir?: string,
  * }} BrainUI
@@ -670,9 +671,13 @@ export class Brain {
     this.messages.push({ role: "user", content });
 
     this.abort = new AbortController();
+    this.made = [];
     try {
       const reply = await this.loop();
       this.log.push({ role: "buddy", text: reply });
+      // What this answer made is shown when it's done: the user shouldn't have to go looking for it.
+      const made = [...new Set(this.made)];
+      if (made.length && !this.abort.signal.aborted) await this.ui.reveal?.(made);
       return reply;
     } catch (err) {
       if (this.abort.signal.aborted) return "Okay, stopped.";
@@ -770,7 +775,10 @@ export class Brain {
       ask: (summary, note) => askUser(summary, this.asking({ note })),
       status: (text) => this.ui.status(text),
       signal: this.abort?.signal,
-      record: (change) => this.ui.record?.({ ...change, from: this.ui.source ?? "Buddy" }),
+      record: (change) => {
+        if (change.kind === "created" && change.file) this.made.push(change.file);
+        this.ui.record?.({ ...change, from: this.ui.source ?? "Buddy" });
+      },
     });
   }
 
