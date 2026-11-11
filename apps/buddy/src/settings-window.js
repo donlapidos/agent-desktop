@@ -16,7 +16,8 @@ const SIZE = { width: 640, height: 600 };
  *   preview: (voice: number, speed: number) => void,        // say a line in that voice
  *   setKey: (key: string) => Promise<string | null>,        // resolves an error message, or null
  *   setAddress: (url: string) => Promise<string | null>,    // where Ollama, LM Studio or another server is
- *   checkModel: () => string | null,                        // starts (or stops) a model check; an error, or null
+ *   checkModel: () => string | null,
+ *   undo: (id: string, force: boolean) => Promise<{ ok: boolean, message: string, changed?: boolean }>, // Settings › Activity                        // starts (or stops) a model check; an error, or null
  *   removeKey: () => void,
  *   setStartup: (on: boolean) => void,
  *   clear: (what: "explainers" | "log") => void,
@@ -35,11 +36,13 @@ export function createSettingsWindow(deps) {
   /** @type {BrowserWindow | null} */
   let win = null;
 
-  function open() {
+  /** Opens Settings, on `page` if given ("activity", "claude"…). @param {string} [page] */
+  function open(page) {
     if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.show();
       win.focus();
+      if (page) win.webContents.send("settings-show-page", page);
       return;
     }
     win = new BrowserWindow({
@@ -54,6 +57,7 @@ export function createSettingsWindow(deps) {
       webPreferences: { preload: path.join(deps.here, "preload.cjs"), backgroundThrottling: false },
     });
     win.loadFile(path.join(deps.here, "ui/settings.html"));
+    if (page) win.webContents.once("did-finish-load", () => win?.webContents.send("settings-show-page", page));
     win.once("ready-to-show", () => {
       win?.show();
       win?.focus();
@@ -78,6 +82,7 @@ export function createSettingsWindow(deps) {
   handle("settings-capture", (on) => deps.capture(!!on));
   handle("settings-preview", (voice, speed) => deps.preview(Number(voice), Number(speed)));
   handle("settings-key", async (key) => ({ error: await deps.setKey(String(key ?? "")), state: deps.state() }));
+  handle("settings-undo", async (id, force) => ({ ...(await deps.undo(String(id ?? ""), !!force)), state: deps.state() }));
   handle("settings-check-model", () => ({ error: deps.checkModel(), state: deps.state() }));
   handle("settings-address", async (url) => ({ error: await deps.setAddress(String(url ?? "")), state: deps.state() }));
   handle("settings-key-remove", () => (deps.removeKey(), deps.state()));

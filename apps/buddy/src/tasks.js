@@ -54,6 +54,8 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
       point: (bounds, caption) => point(bounds, caption, t.id),
       explain: (plate) => explain(plate, t.target),
       status: (text) => setState(t, "working", text),
+      // Who made a change, in Settings › Activity.
+      source: t.title,
       // Approvals belong to the task asking: its window comes forward (without stealing focus) and its chip turns amber.
       confirm: (summaryText, bounds, note) => {
         if (bounds) point(bounds, summaryText, t.id);
@@ -82,7 +84,7 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
       if (first) t.title = shorten(first.text);
     } else {
       t.brain = makeBrain(ui);
-      if (!t.brain) return { error: "Add your Anthropic API key first." };
+      if (!t.brain) return { error: "Choose how Buddy thinks first, in Settings › AI & privacy." };
     }
 
     t.win = new BrowserWindow({

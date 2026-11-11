@@ -158,6 +158,9 @@
   .check-row { margin-top: 10px; align-items: center; gap: 10px; }
   .check-row .status-text { color: var(--muted); font-size: 12.5px; }
   .data-row.dim { opacity: .55; }
+  h3.day { margin: 18px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  h3.day:first-child { margin-top: 0; }
+  .activity-row .status-text { color: var(--faint); font-size: 12px; white-space: nowrap; }
   .provider-list { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); max-width: none; }
   .model { display: grid; grid-template-columns: 18px 1fr; gap: 2px 10px; align-items: start; padding: 10px 12px; border: 0; border-radius: 11px; background: var(--field); text-align: left; transition: background .15s, box-shadow .15s; }
   .model:hover { background: var(--field-hover); }
@@ -196,6 +199,7 @@
     <button data-page="agents"><svg class="i" viewBox="0 0 16 16"><path d="M3 2.5 13 7.2 8.2 8.4 6.4 13z"/></svg>Agents</button>
     <button data-page="routines"><svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8.5" r="5.7"/><path d="M8 5.3v3.4l2.2 1.4M6 1.5h4"/></svg>Routines</button>
     <button data-page="claude"><svg class="i" viewBox="0 0 16 16"><path d="M8 1.8 13 3.8v4c0 3-2.2 5.3-5 6.4C5.2 13.1 3 10.8 3 7.8v-4z"/><path d="m6 8 1.5 1.5L10.3 6.6"/></svg>AI &amp; privacy</button>
+    <button data-page="activity"><svg class="i" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4"/><path d="M2.3 1.8v2.6h2.6M8 5v3.2l2 1.3"/></svg>Activity</button>
     <button data-page="about"><svg class="i" viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>About &amp; updates</button>
     <div class="foot">
       <button class="link" id="feature">Request a feature</button>
@@ -285,6 +289,15 @@
         <div id="routine-editor"></div>
         <div class="row" style="margin-top:12px"><button class="btn primary" id="routine-new">New routine</button></div>
         <p class="note">Routines run while Buddy is running. One missed by less than six hours (the PC was asleep) runs when Buddy next can; older ones are skipped.</p>
+      </div>
+    </section>
+
+    <section id="page-activity" hidden>
+      <h2>Activity</h2>
+      <p class="lede">What Buddy changed on your PC this past week: files it made or changed, documents, commands it ran and pages it read. A file can be put back with Undo: one Buddy made goes to the Recycle Bin, one it changed gets its old version back.</p>
+      <div class="group">
+        <div id="activity"></div>
+        <p class="problem" id="activity-problem"></p>
       </div>
     </section>
 
@@ -417,7 +430,7 @@
   const problems = {};
 
   // ---------- Navigation: one section at a time; the last one is remembered ----------
-  const pages = ["voice", "dictation", "look", "keys", "agents", "routines", "claude", "about"];
+  const pages = ["voice", "dictation", "look", "keys", "agents", "routines", "claude", "activity", "about"];
   function show(page) {
     for (const p of pages) $(`page-${p}`).hidden = p !== page;
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-current", b.dataset.page === page ? "page" : "false");
@@ -1027,7 +1040,52 @@
     renderAgents();
     if (!editing) renderRoutines();
     renderClaude();
+    renderActivity();
     renderAbout();
+  }
+
+  // ---------- Activity ----------
+  let undoing = null; // id of the change being undone
+  let confirmUndo = null; // id whose file changed since: the next click undoes anyway
+  const activityDay = (iso) => {
+    const d = new Date(iso);
+    const today = new Date();
+    const yesterday = new Date(Date.now() - 864e5);
+    return d.toDateString() === today.toDateString() ? "Today" : d.toDateString() === yesterday.toDateString() ? "Yesterday" : d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "short" });
+  };
+  function renderActivity() {
+    const list = S.activity ?? [];
+    if (!list.length) {
+      $("activity").replaceChildren(el("p", { className: "empty", textContent: "Nothing yet. When Buddy makes or changes a file, runs a command or reads a page for you, it shows up here." }));
+      return;
+    }
+    const rows = [];
+    let day = "";
+    for (const e of list) {
+      const d = activityDay(e.at);
+      if (d !== day) rows.push(el("h3", { className: "day", textContent: (day = d) }));
+      const time = new Date(e.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+      const meta = [time, e.from !== "Buddy" ? e.from : null, e.undone ? "undone" : null].filter(Boolean).join(" · ");
+      const row = el("div", { className: `data-row activity-row${e.undone ? " dim" : ""}` }, el("div", {}, el("b", { textContent: e.summary }), el("span", { textContent: ` ${meta}` })));
+      if (e.canUndo) {
+        const again = confirmUndo === e.id;
+        const btn = el("button", { className: again ? "btn danger" : "btn", textContent: undoing === e.id ? "Undoing…" : again ? "Undo anyway" : "Undo", disabled: !!undoing });
+        btn.addEventListener("click", async () => {
+          undoing = e.id;
+          renderActivity();
+          const res = await window.buddy.settingsUndo(e.id, again);
+          undoing = null;
+          confirmUndo = res.changed ? e.id : null;
+          $("activity-problem").textContent = res.ok ? "" : res.message;
+          render(res.state);
+        });
+        row.append(btn);
+      } else if (!e.undone && (e.kind === "ran" || e.kind === "read")) {
+        row.append(el("span", { className: "status-text", textContent: e.kind === "ran" ? "Can't be undone automatically" : "" }));
+      }
+      rows.push(row);
+    }
+    $("activity").replaceChildren(...rows);
   }
 
   $("close").addEventListener("click", () => window.buddy.settingsClose());
@@ -1035,11 +1093,19 @@
   // Esc closes Settings, unless it was cancelling a shortcut being recorded (handled, and marked so, above).
   addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented && e.target.tagName !== "INPUT") window.buddy.settingsClose(); });
 
+  // Opened on a given page (the tray's "Recent changes…" opens Activity).
+  let requestedPage = null;
+  window.buddy.onSettingsShowPage?.((p) => {
+    if (!pages.includes(p)) return;
+    requestedPage = p;
+    if (S) show(p);
+  });
+
   (async () => {
     let page = "voice";
     try { page = pages.includes(localStorage.getItem("settings-page")) ? localStorage.getItem("settings-page") : "voice"; } catch {}
     render(await window.buddy.settingsState());
-    show(page);
+    show(requestedPage ?? page);
   })();
 </script>
 </body>

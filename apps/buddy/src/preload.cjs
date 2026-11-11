@@ -69,6 +69,8 @@ contextBridge.exposeInMainWorld("buddy", {
   settingsReleases: () => ipcRenderer.invoke("settings-releases"),
   settingsNotices: () => ipcRenderer.invoke("settings-notices"),
   onSettingsChanged: on("settings-changed"),
+  onSettingsShowPage: on("settings-show-page"),
+  settingsUndo: (id, force) => ipcRenderer.invoke("settings-undo", id, force),
   settingsClose: () => ipcRenderer.invoke("settings-close"),
   settingsMinimize: () => ipcRenderer.invoke("settings-minimize"),
   // Island task previews

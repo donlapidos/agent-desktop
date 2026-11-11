@@ -6,6 +6,7 @@ import { findControl, observe, perform, renderReading, renderTree, snapshotResil
 import { writeDocx } from "./documents.js";
 import { PROVIDERS, ProviderError, capsOf, chatTurn } from "./providers.js";
 import { BEYOND_SCREEN, PC_TOOLS, PC_TOOL_NAMES, placesHere, runPcTool } from "./pc-tools.js";
+import { fingerprint } from "./activity.js";
 import path from "node:path";
 
 /** @typedef {"low" | "medium" | "high" | "xhigh" | "max"} Effort */
@@ -536,6 +537,8 @@ const spokenNote = (lang) =>
  *   trace?: (entry: object) => void,
  *   documentsDir?: string,
  *   dataDir?: string,
+ *   record?: (change: Omit<import("./activity.js").Change, "id" | "at">) => void,
+ *   source?: string,
  *   openFile?: (file: string) => Promise<string>,
  *   agentDir?: string,
  * }} BrainUI
@@ -767,6 +770,7 @@ export class Brain {
       ask: (summary, note) => askUser(summary, this.asking({ note })),
       status: (text) => this.ui.status(text),
       signal: this.abort?.signal,
+      record: (change) => this.ui.record?.({ ...change, from: this.ui.source ?? "Buddy" }),
     });
   }
 
@@ -936,6 +940,7 @@ export class Brain {
         if (!(await askUser(`Create "${input.title}" in Documents\\Buddy and open it in Word`, this.asking()))) return "The user declined.";
         this.ui.status("Writing the document…");
         const file = await writeDocx({ title: input.title, markdown: input.markdown, dir: this.ui.documentsDir });
+        this.ui.record?.({ kind: "document", summary: `Made the document "${input.title}"`, file, after: fingerprint(file), from: this.ui.source ?? "Buddy" });
         const error = await this.ui.openFile(file);
         return error ? `Saved ${file}, but it couldn't be opened: ${error}` : `Saved and opened in Word: ${file}`;
       }

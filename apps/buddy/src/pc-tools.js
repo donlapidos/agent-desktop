@@ -17,6 +17,7 @@ import dns from "node:dns/promises";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fingerprint, keepCopy } from "./activity.js";
 
 /** @type {{ name: string, description: string, input_schema: { type: "object", properties: Record<string, object>, required?: string[] } }[]} */
 export const PC_TOOLS = [
@@ -180,26 +181,6 @@ export function placeWords(/** @type {string} */ full, /** @type {Places} */ p) 
   return `${path.basename(full)} in ${shortDir}`;
 }
 
-// ---------- Undo ----------
-
-const UNDO_KEEP_MS = 7 * 24 * 3600_000;
-
-/** Copies a file about to change into the undo folder, and clears copies older than a week. Returns where. */
-function keepForUndo(/** @type {string} */ file, /** @type {string} */ undoDir) {
-  try {
-    for (const d of fs.readdirSync(undoDir)) {
-      const at = Number(d.split("-")[0]);
-      if (at && Date.now() - at > UNDO_KEEP_MS) fs.rmSync(path.join(undoDir, d), { recursive: true, force: true });
-    }
-  } catch {}
-  const dir = path.join(undoDir, `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
-  fs.mkdirSync(dir, { recursive: true });
-  const copy = path.join(dir, path.basename(file));
-  fs.copyFileSync(file, copy);
-  fs.writeFileSync(path.join(dir, "from.txt"), file);
-  return copy;
-}
-
 // ---------- Web pages ----------
 
 /** Whether a host is this PC or the local network (never fetched). */
@@ -301,6 +282,7 @@ function runPowerShell(/** @type {string} */ command, { cwd, timeoutMs, signal }
  *   undoDir: string,
  *   ask: (summary: string, note?: string) => Promise<boolean>,
  *   status: (text: string) => void,
+ *   record?: (change: Omit<import("./activity.js").Change, "id" | "at" | "from">) => void,
  *   signal?: AbortSignal,
  *   fetchImpl?: typeof fetch,
  *   lookup?: (host: string) => Promise<boolean>,
@@ -372,9 +354,10 @@ export async function runPcTool(name, input, ctx) {
       if (exists && fs.statSync(j.full).isDirectory()) return "That's a folder, not a file.";
       if (!(await ctx.ask(`${exists ? "Replace" : "Create"} ${placeWords(j.full, p)}`, exists ? "The old version is kept for a week." : undefined))) return "The user declined.";
       ctx.status(exists ? "Updating a file…" : "Making a file…");
-      if (exists) keepForUndo(j.full, ctx.undoDir);
+      const copy = exists ? keepCopy(j.full, ctx.undoDir) : undefined;
       fs.mkdirSync(path.dirname(j.full), { recursive: true });
       fs.writeFileSync(j.full, input.content);
+      ctx.record?.({ kind: exists ? "replaced" : "created", summary: `${exists ? "Replaced" : "Created"} ${placeWords(j.full, p)}`, file: j.full, copy, after: fingerprint(j.full) });
       return `${exists ? "Replaced" : "Created"} ${j.full} (${input.content.length} characters).`;
     }
 
@@ -394,9 +377,10 @@ export async function runPcTool(name, input, ctx) {
       if (times > 1 && !input.replace_all) return `old_text is in the file ${times} times. Include more of the text around it, or set replace_all.`;
       if (!(await ctx.ask(`Change ${placeWords(j.full, p)}`, "The old version is kept for a week."))) return "The user declined.";
       ctx.status("Updating a file…");
-      keepForUndo(j.full, ctx.undoDir);
+      const copy = keepCopy(j.full, ctx.undoDir);
       const next = input.replace_all ? text.split(old).join(String(input.new_text ?? "")) : text.replace(old, () => String(input.new_text ?? ""));
       fs.writeFileSync(j.full, next);
+      ctx.record?.({ kind: "edited", summary: `Changed ${placeWords(j.full, p)}`, file: j.full, copy, after: fingerprint(j.full) });
       return `Changed ${j.full} (${input.replace_all ? times : 1} place${(input.replace_all ? times : 1) === 1 ? "" : "s"}).`;
     }
 
@@ -409,6 +393,7 @@ export async function runPcTool(name, input, ctx) {
       fs.mkdirSync(p.workDir, { recursive: true });
       const timeoutMs = Math.min(300, Math.max(5, Number(input.timeout_seconds) || 60)) * 1000;
       const { code, out, ended } = await runPowerShell(command, { cwd: p.workDir, timeoutMs, signal: ctx.signal });
+      ctx.record?.({ kind: "ran", summary: said });
       const shown = out.length > 30_000 ? `${out.slice(0, 15_000)}\n…[${out.length - 30_000} characters left out]…\n${out.slice(-15_000)}` : out;
       const head = ended === "timeout" ? `Stopped after ${timeoutMs / 1000} s.` : ended === "cancelled" ? "Stopped: the user cancelled." : `Exit code ${code}.`;
       return `${head}\n${shown.trim() || "(no output)"}`;
@@ -425,6 +410,7 @@ export async function runPcTool(name, input, ctx) {
       if (privateHost(u.hostname)) return "Not allowed: addresses on this PC or the local network can't be read.";
       if (!(await ctx.ask(`Read a page on ${u.hostname}`, u.toString().slice(0, 300)))) return "The user declined.";
       ctx.status(`Reading ${u.hostname}…`);
+      ctx.record?.({ kind: "read", summary: `Read a page on ${u.hostname}` });
       try {
         const { res, url } = await fetchPublic(u.toString(), ctx.signal, ctx.fetchImpl, ctx.lookup);
         if (!res.ok) return `The page answered ${res.status}${res.statusText ? ` ${res.statusText}` : ""}.`;

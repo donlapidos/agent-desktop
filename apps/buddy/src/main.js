@@ -11,6 +11,7 @@ import { APPS, APP_IDS, allowRules, appStatus, launchSpec, setApp, setCodeAllowe
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
 import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, noteTested, providerForKey, testedOf, useCapsStore, verdict } from "./providers.js";
 import { CASES, runEvals } from "./evals.js";
+import { createActivity } from "./activity.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
@@ -160,6 +161,23 @@ function modelListState() {
   const at = providerURL(provider) ?? undefined;
   return { ...list, verdicts: Object.fromEntries(shown.map((m) => [m, verdict(capsOf(provider, at, m))])), tested: Object.fromEntries(shown.map((m) => [m, testedOf(at, m)])) };
 }
+
+// ---------- Activity: what Buddy changed, and undoing it (activity.js), shown in Settings › Activity ----------
+
+/** @type {ReturnType<typeof createActivity> | null} */
+let activity = null;
+function startActivity() {
+  activity = createActivity({
+    file: path.join(app.getPath("userData"), "activity.json"),
+    undoDir: path.join(app.getPath("userData"), "undo"),
+    trash: (file) => shell.trashItem(file),
+    onChange: () => settingsWindow?.refresh(),
+  });
+}
+const recordChange = (/** @type {Omit<import("./activity.js").Change, "id" | "at">} */ change) => {
+  activity?.add(change);
+  trace({ kind: "activity", what: change.kind });
+};
 
 // ---------- Model check (evals.js), run from Settings on the chosen model with the saved key ----------
 
@@ -1193,7 +1211,7 @@ const providerUI = () => ({ apiKey: loadApiKey() ?? "", provider: currentProvide
 
 function startBrain() {
   brain = providerReady()
-    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), openFile })
+    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, openFile })
     : null;
 }
 
@@ -1302,7 +1320,7 @@ function startTasks() {
     here,
     icon: ICON,
     makeBrain: (ui) => {
-      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), openFile, ...ui }) : null;
+      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, openFile, ...ui }) : null;
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,
@@ -1505,6 +1523,7 @@ function buildTrayMenu() {
       { label: "New task window", click: () => newTask() },
       { type: "separator" },
       ...(updates?.state().status === "ready" ? [{ label: `Restart to update to ${updates.state().next}`, click: () => updates.install() }] : []),
+      { label: "Recent changes…", click: () => settingsWindow.open("activity") },
       { label: "Settings…", click: () => settingsWindow.open() },
       { label: "Recreate shortcuts", visible: process.platform === "win32" && !app.isPackaged, click: writeShortcuts },
       { type: "separator" },
@@ -1554,6 +1573,7 @@ function settingsState() {
     modelCheck: modelCheck && { model: modelCheck.model, provider: modelCheck.provider, running: modelCheck.running, stopped: !!modelCheck.stopped, done: modelCheck.done, total: modelCheck.total, passed: modelCheck.passed, missed: modelCheck.missed },
     tested: testedOf(providerURL() ?? undefined, chosenModel() ?? ""),
     checkTasks: CASES.length,
+    activity: (activity?.list() ?? []).slice(0, 200).map((e) => ({ id: e.id, at: e.at, from: e.from, kind: e.kind, summary: e.summary, undone: e.undone ?? null, canUndo: e.canUndo, file: e.file ?? null })),
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
     claude: appStatus(),
@@ -1631,6 +1651,11 @@ const settingsWindow = createSettingsWindow({
   setKey: setApiKey,
   setAddress,
   checkModel,
+  undo: async (id, force) => {
+    const res = (await activity?.undo(id, { force })) ?? { ok: false, message: "Nothing to undo." };
+    trace({ kind: "undo", ok: res.ok, changed: !!res.changed });
+    return res;
+  },
   removeKey: () => {
     fs.rmSync(keyFile(), { force: true });
     if (!envKey() && !providerReady()) brain = null;
@@ -1685,6 +1710,7 @@ app.whenReady().then(() => {
   applyAppearance();
   setBrainDefaults(settings);
   loadModelCaps();
+  startActivity();
   refreshModels().catch(() => {});
   setAgentPolicy(settings);
   app.setAppUserModelId(APP_ID);
