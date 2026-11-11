@@ -220,7 +220,8 @@ const CHECKS = {
     async run() {
       const shot = path.join(out, "marks.png");
       const strokes = JSON.stringify([[{ x: 200, y: 200 }, { x: 320, y: 220 }, { x: 420, y: 210 }]]);
-      const { markers, timedOut } = await runCopy("mark", { BUDDY_MARK_TEST: strokes, BUDDY_MARK_TEST_OUT: shot }, "MARK_TEST_DONE");
+      // Marking needs an AI set up (without one, Buddy opens the bubble to ask for a key); no call is made.
+      const { markers, timedOut } = await runCopy("mark", { BUDDY_MARK_TEST: strokes, BUDDY_MARK_TEST_OUT: shot, ANTHROPIC_API_KEY: "sk-ant-e2e-not-used-0000000000" }, "MARK_TEST_DONE");
       if (!markers.MARKS) return [timedOut ? "timed out" : "no marks printed"];
       return [markers.MARKS[0].length !== 1 && `expected 1 mark, got ${markers.MARKS[0].length}`, !fs.existsSync(shot) && "no marks image"].filter(Boolean);
     },
@@ -234,7 +235,8 @@ const CHECKS = {
         const { markers, timedOut } = await runCopy(`approval-${kind}`, { BUDDY_APPROVAL_TEST: kind, ANTHROPIC_API_KEY: "sk-ant-e2e-not-used-0000000000" }, "APPROVAL_TEST", 60_000);
         const r = markers.APPROVAL_TEST?.[0];
         if (!r) problems.push(`${kind}: ${timedOut ? "timed out" : "nothing printed"}`);
-        else if (r.answered !== true) problems.push(`${kind}: the click on Allow didn't count`);
+        else if (r.answered !== "allow") problems.push(`${kind}: the click on Allow didn't count (${r.answered})`);
+        else if (!r.keyboardBackInApp) problems.push(`${kind}: the keyboard didn't go back to the app after the click`);
       }
       return problems;
     },

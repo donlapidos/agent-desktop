@@ -645,7 +645,11 @@ function releaseFocus() {
 async function summon() {
   if (mode === "working" || mode === "reading-marks") return showBubble({ focus: false });
   if (Date.now() - turn.at > IDLE_RESET_MS) brain?.reset();
-  const win = await foregroundWindow(ownPids());
+  // The window the user is in: the focused one, or, when Buddy itself has the focus (its bubble was just closed), the
+  // frontmost window that isn't Buddy's, which is where they'll be once it's gone. Without one, the keyboard couldn't
+  // be handed back after an approval (releaseFocus).
+  const own = ownPids();
+  const win = (await foregroundWindow(own)) ?? (await listWindows()).find((w) => !own.includes(w.pid)) ?? null;
   about = { window: win, point: cursor() };
   brain?.glance(win);
   bubble.webContents.send("summon", {
