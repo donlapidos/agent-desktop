@@ -40,6 +40,7 @@
     "src/approval-queue.js",
     "src/island-state.js",
     "src/app-sessions.js",
-    "src/keys.js"
+    "src/keys.js",
+    "src/log.js"
   ]
 }

@@ -13,7 +13,8 @@ import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, ta
 import { keyFor, keyRecord, originOf } from "./keys.js";
 import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, noteTested, providerForKey, testedOf, useCapsStore, verdict } from "./providers.js";
 import { CASES, runEvals } from "./evals.js";
-import { createActivity } from "./activity.js";
+import { createActivity, pruneUndo } from "./activity.js";
+import { createLog } from "./log.js";
 import { createApprovalQueue } from "./approval-queue.js";
 import { createAppSessions } from "./app-sessions.js";
 import { islandView } from "./island-state.js";
@@ -207,6 +208,8 @@ function modelListState() {
 /** @type {ReturnType<typeof createActivity> | null} */
 let activity = null;
 function startActivity() {
+  // Old undo copies go at startup too, not only when a new one is made.
+  pruneUndo(path.join(app.getPath("userData"), "undo"));
   activity = createActivity({
     file: path.join(app.getPath("userData"), "activity.json"),
     undoDir: path.join(app.getPath("userData"), "undo"),
@@ -292,7 +295,10 @@ function loadModelCaps() {
   } catch {}
   useCapsStore(saved, (entries) => {
     try {
-      fs.writeFileSync(capsFile(), JSON.stringify(entries, null, 1));
+      // Through a temporary file, so a crash mid-write can't leave half a file.
+      const tmp = `${capsFile()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(entries, null, 1));
+      fs.renameSync(tmp, capsFile());
     } catch (err) {
       trace({ kind: "model-caps-save-failed", message: String(err) });
     }
@@ -1288,10 +1294,11 @@ function watchCpu() {
 }
 
 // Timing log (userData/timing.log, JSON lines): how long each model call and tool took, to find slow steps.
+/** @type {ReturnType<typeof createLog> | null} */
+let timing = null;
 function trace(entry) {
-  try {
-    fs.appendFileSync(path.join(app.getPath("userData"), "timing.log"), JSON.stringify({ t: new Date().toISOString(), ...entry }) + "\n");
-  } catch {}
+  timing ??= createLog(path.join(app.getPath("userData"), "timing.log"));
+  timing.write(entry);
 }
 
 // Each Brain keeps its snapshots in its own agent-desktop session (brain.js). Those from earlier runs are dead
@@ -1704,7 +1711,7 @@ function settingsState() {
     explainers = fs.readdirSync(explainersDir()).filter((f) => f.endsWith(".html")).length;
   } catch {}
   try {
-    logBytes = fs.statSync(timingLog()).size;
+    logBytes = [timingLog(), timingLog().replace(/\.log$/, ".old.log")].reduce((n, f) => n + (fs.statSync(f, { throwIfNoEntry: false })?.size ?? 0), 0);
   } catch {}
   return {
     settings,
@@ -1826,7 +1833,10 @@ const settingsWindow = createSettingsWindow({
   },
   setStartup: (on) => process.platform === "win32" && setStartsWithWindows(on),
   clear: (what) => {
-    if (what === "log") return fs.rmSync(timingLog(), { force: true });
+    if (what === "log") {
+      fs.rmSync(timingLog(), { force: true });
+      return fs.rmSync(timingLog().replace(/\.log$/, ".old.log"), { force: true });
+    }
     for (const f of fs.readdirSync(explainersDir()).filter((x) => x.endsWith(".html"))) fs.rmSync(path.join(explainersDir(), f), { force: true });
   },
   openData: () => shell.openPath(app.getPath("userData")),

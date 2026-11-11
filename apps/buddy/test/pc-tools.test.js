@@ -237,3 +237,12 @@ test("a refused command isn't even asked about, and secret keys in what comes ba
   assert.equal(hideSecrets("-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----").hidden, 1);
   assert.equal(hideSecrets("sk-short and AIza-not-long").hidden, 0, "things that merely start like keys stay");
 });
+
+test("editing a file too big to load is refused, as reading one is", async () => {
+  const { places, ctx } = pc();
+  const big = path.join(places.workDir, "huge.log");
+  fs.writeFileSync(big, "start");
+  fs.truncateSync(big, 21 * 1048576);
+  assert.match(await runPcTool("edit_file", { path: "huge.log", old_text: "start", new_text: "x" }, ctx()), /over 20 MB/);
+  assert.match(await runPcTool("read_file", { path: "huge.log" }, ctx()), /over 20 MB/);
+});

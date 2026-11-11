@@ -18,14 +18,19 @@ export function fingerprint(/** @type {string} */ file) {
   }
 }
 
-/** Copies a file about to change into the undo folder, and clears copies older than a week. Returns the copy. */
-export function keepCopy(/** @type {string} */ file, /** @type {string} */ undoDir) {
+/** Removes undo copies older than a week. */
+export function pruneUndo(/** @type {string} */ undoDir, now = Date.now()) {
   try {
     for (const d of fs.readdirSync(undoDir)) {
       const at = Number(d.split("-")[0]);
-      if (at && Date.now() - at > KEEP_MS) fs.rmSync(path.join(undoDir, d), { recursive: true, force: true });
+      if (at && now - at > KEEP_MS) fs.rmSync(path.join(undoDir, d), { recursive: true, force: true });
     }
   } catch {}
+}
+
+/** Copies a file about to change into the undo folder, and clears copies older than a week. Returns the copy. */
+export function keepCopy(/** @type {string} */ file, /** @type {string} */ undoDir) {
+  pruneUndo(undoDir);
   const dir = path.join(undoDir, `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`);
   fs.mkdirSync(dir, { recursive: true });
   const copy = path.join(dir, path.basename(file));

@@ -363,6 +363,7 @@ function runPowerShell(/** @type {string} */ command, { cwd, timeoutMs, signal }
  */
 
 const MAX_READ_CHARS = 60_000;
+const MAX_FILE_BYTES = 20 * 1048576; // read_file and edit_file load the whole file
 const DEFAULT_LINES = 2000;
 
 /** Runs one PC tool. Resolves what the model is told. @param {string} name @param {any} input @param {PcContext} ctx */
@@ -401,7 +402,7 @@ export async function runPcTool(name, input, ctx) {
       if (j.read === "ask" && !(await ctx.ask(`Read ${placeWords(j.full, p)}`, undefined, "read"))) return "The user declined.";
       let buf;
       try {
-        if (fs.statSync(j.full).size > 20 * 1048576) return "That file is over 20 MB; read it with run_powershell (Get-Content -TotalCount, Select-String).";
+        if (fs.statSync(j.full).size > MAX_FILE_BYTES) return "That file is over 20 MB; read it with run_powershell (Get-Content -TotalCount, Select-String).";
         buf = fs.readFileSync(j.full);
       } catch (err) {
         return `Couldn't read it: ${err.code === "ENOENT" ? "it doesn't exist" : err.code === "EISDIR" ? "that's a folder; use list_folder" : err.message}`;
@@ -440,6 +441,7 @@ export async function runPcTool(name, input, ctx) {
       if (j.read === "never") return refused(j);
       let text;
       try {
+        if (fs.statSync(j.full).size > MAX_FILE_BYTES) return "That file is over 20 MB, too big to edit here; use run_powershell for it.";
         text = fs.readFileSync(j.full, "utf8");
       } catch (err) {
         return `Couldn't open it: ${err.code === "ENOENT" ? "it doesn't exist" : err.message}`;

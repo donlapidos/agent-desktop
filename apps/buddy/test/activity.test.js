@@ -126,3 +126,12 @@ test("when an answer finishes, Buddy shows the files it made, not the ones it on
     setBrainDefaults({ model: "claude-opus-5-5", effort: "medium" });
   }
 });
+
+test("undo copies over a week old are cleared on their own, without waiting for a new copy", async () => {
+  const { pruneUndo } = await import("../src/activity.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "buddy-undo-"));
+  const now = Date.now();
+  for (const at of [now - KEEP_MS - 60_000, now - 3600_000]) fs.mkdirSync(path.join(dir, `${at}-abcde`));
+  pruneUndo(dir, now);
+  assert.deepEqual(fs.readdirSync(dir), [`${now - 3600_000}-abcde`]);
+});
