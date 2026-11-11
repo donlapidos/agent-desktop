@@ -64,8 +64,9 @@ const BUDDY_MARK = `<svg width="14" height="14" viewBox="0 0 22 22" aria-hidden=
 export const escapeHtml = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-// Model SVG may draw anything, but may not run, load or navigate. The removals repeat until nothing changes, so
-// pieces left by one removal can't join into something the pass would have removed ("<scr<script></script>ipt>").
+// Model SVG may draw anything, but may not run, load or navigate. What's removed leaves a space, not nothing, so the
+// pieces either side can't join into something that would have been removed ("<scr<script>ipt>" becomes
+// "<scr ipt>", not "<script>"); the removals also repeat until nothing changes, and a final check stands on its own.
 export function sanitizeSvg(svg) {
   let out = String(svg ?? "").trim();
   if (!/^<svg[\s>]/i.test(out)) return "";
@@ -73,12 +74,12 @@ export function sanitizeSvg(svg) {
   let passes = 0;
   do {
     previous = out;
-    out = out.replace(/<(script|style|foreignObject|iframe|object|embed|a)\b[\s\S]*?<\/\1\s*>/gi, "");
-    out = out.replace(/<\/?(script|style|foreignObject|iframe|object|embed|a|image|link|meta)\b[^>]*>/gi, "");
-    out = out.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
-    out = out.replace(/\s(xlink:)?href\s*=\s*("|')(?!#)[^"']*\2/gi, "");
+    out = out.replace(/<(script|style|foreignObject|iframe|object|embed|a)\b[\s\S]*?<\/\1\s*>/gi, " ");
+    out = out.replace(/<\/?(script|style|foreignObject|iframe|object|embed|a|image|link|meta)\b[^>]*>/gi, " ");
+    out = out.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, " ");
+    out = out.replace(/\s(xlink:)?href\s*=\s*("|')(?!#)[^"']*\2/gi, " ");
     // SMIL could otherwise animate an href to somewhere outside the page.
-    out = out.replace(/<(animate|set)\b[^>]*attributeName\s*=\s*("|')(xlink:)?href\2[^>]*\/?>/gi, "");
+    out = out.replace(/<(animate|set)\b[^>]*attributeName\s*=\s*("|')(xlink:)?href\2[^>]*\/?>/gi, " ");
   } while (out !== previous && ++passes < 10);
   // Still changing after ten passes: nothing a plate needs looks like that.
   if (out !== previous) return "";
