@@ -134,3 +134,21 @@ test("Buddy starting after the Claude session tells Claude its tools changed, an
     bridge.close();
   }
 });
+
+test("a pipe still held by a Buddy that just quit is taken over once it's free", async () => {
+  const dir = tempDir();
+  const pipe = testPipe();
+  const old = net.createServer().listen(pipe);
+  await new Promise((r) => old.once("listening", r));
+  const bridge = startBridge({ dir, pipe, run: async (name) => `ran ${name}` });
+  await new Promise((r) => setTimeout(r, 700));
+  await new Promise((r) => old.close(r));
+  const client = await claude(dir);
+  try {
+    await new Promise((r) => setTimeout(r, 600));
+    assert.deepEqual((await client.callTool({ name: "look", arguments: {} })).content, [{ type: "text", text: "ran look" }]);
+  } finally {
+    await client.close();
+    bridge.close();
+  }
+});

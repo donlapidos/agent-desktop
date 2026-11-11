@@ -4,13 +4,15 @@ import { askUser, requestApproval } from "./approvals.js";
 import { decide } from "./policy.js";
 import { findControl, observe, perform, renderReading, renderTree, snapshotResilient, waitForProgress } from "./desktop.js";
 import { writeDocx } from "./documents.js";
+import { PROVIDERS, ProviderError, chatTurn } from "./providers.js";
 
 /** @typedef {"low" | "medium" | "high" | "xhigh" | "max"} Effort */
 
 // The model and effort new conversations start with, from Settings (BUDDY_MODEL and BUDDY_EFFORT override). A
 // conversation keeps the pair it started with: thinking is tied to the model that produced it, so switching models
 // mid-conversation could fail.
-let startWith = { model: "claude-opus-5-5", effort: /** @type {Effort} */ ("medium") };
+// Other providers' models are chosen per provider (Settings keeps one for each).
+let startWith = { model: "claude-opus-5-5", effort: /** @type {Effort} */ ("medium"), models: /** @type {Record<string, string>} */ ({}) };
 
 /** @param {{ model: string, effort: string }} chosen */
 /** @type {import("./policy.js").AgentPolicy | null} */
@@ -21,22 +23,32 @@ export function setAgentPolicy(/** @type {import("./policy.js").AgentPolicy | nu
   agentPolicy = policy ? { rope: policy.rope, trustedApps: [...policy.trustedApps], blockedApps: [...policy.blockedApps] } : null;
 }
 
-export function setBrainDefaults({ model, effort }) {
-  startWith = { model: process.env.BUDDY_MODEL ?? model, effort: /** @type {Effort} */ (process.env.BUDDY_EFFORT ?? effort) };
+/** @param {{ model: string, effort: string, providerModels?: Record<string, string> }} chosen */
+export function setBrainDefaults({ model, effort, providerModels = {} }) {
+  startWith = { model: process.env.BUDDY_MODEL ?? model, effort: /** @type {Effort} */ (process.env.BUDDY_EFFORT ?? effort), models: { ...providerModels } };
 }
 const MAX_STEPS = 30;
 
 // What Buddy says when the model call itself fails, in words an everyday user can act on. Keys are the Agent SDK's
 // error kinds; the direct engine maps its API errors onto the same ones.
 export const FAILURES = {
-  billing_error: "Your Anthropic account is out of credit. Add some at console.anthropic.com under Billing, or ask me from Claude's own app on your Claude plan instead (Settings › Claude & privacy › Use with Claude).",
+  billing_error: "Your Anthropic account is out of credit. Add some at console.anthropic.com under Billing, or ask me from Claude's own app on your Claude plan instead (Settings › AI & privacy › Use with Claude).",
   authentication_failed: "My API key was rejected. Open settings from the tray to fix it.",
   account_on_hold: "Your Anthropic account is on hold. Check console.anthropic.com, then ask me again.",
   rate_limit: "I'm being rate limited. Give me a moment and try again.",
   overloaded: "Claude is busy right now. Try again in a minute.",
   server_error: "Claude is having trouble right now. Try again in a minute.",
-  model_not_found: "The model chosen in Settings isn't available on your account. Pick another under Claude & privacy.",
+  model_not_found: "The model chosen in Settings isn't available on your account. Pick another under AI & privacy.",
 };
+
+/** FAILURES in the words of the provider Buddy is using. */
+export function failureFor(/** @type {string} */ kind, /** @type {import("./providers.js").ProviderId} */ provider = "anthropic") {
+  if (provider === "anthropic") return FAILURES[kind];
+  const p = PROVIDERS[provider];
+  if (kind === "billing_error") return `Your ${p.label} account is out of credit. Add some at ${p.keyFrom}, or switch provider in Settings › AI & privacy.`;
+  if (kind === "account_on_hold") return `Your ${p.label} account is on hold. Check ${p.keyFrom}, then ask me again.`;
+  return FAILURES[kind]?.replaceAll("Claude", p.label);
+}
 // A look taken when the bubble opened is used for a question asked within this long, and waited on at most this long.
 const PREVIEW_FRESH_MS = 60_000;
 const PREVIEW_WAIT_MS = 4_000;
@@ -502,6 +514,7 @@ const spokenNote = (lang) =>
  * What a Brain needs from the window it answers in (the bubble, or a task window).
  * @typedef {{
  *   apiKey?: string,
+ *   provider?: import("./providers.js").ProviderId,
  *   point: (bounds: import("./geometry.js").PhysicalRect, caption: string) => Promise<void>,
  *   confirm: import("./approvals.js").Ask["confirm"],
  *   status: (text: string) => void,
@@ -538,7 +551,8 @@ export class Brain {
     this.bounds = new Map();
     this.labels = new Map(); // ref -> plain element name, for approval cards
     this.refApps = new Map(); // ref -> the app its window belongs to, for the Agents policy
-    this.model = startWith.model;
+    this.provider = this.ui.provider ?? "anthropic";
+    this.model = this.provider === "anthropic" ? startWith.model : (process.env.BUDDY_MODEL ?? startWith.models[this.provider] ?? "");
     this.effort = startWith.effort;
     /** @type {Map<number, import("./geometry.js").PhysicalRect>} mark number -> its box */
     this.marks = new Map();
@@ -644,6 +658,7 @@ export class Brain {
       return reply;
     } catch (err) {
       if (this.abort.signal.aborted) return "Okay, stopped.";
+      if (err instanceof ProviderError) return failureFor(err.kind, this.provider) ?? `The model call failed (${err.status}): ${err.message.slice(0, 160)}`;
       if (err instanceof Anthropic.AuthenticationError) return FAILURES.authentication_failed;
       if (err instanceof Anthropic.RateLimitError) return FAILURES.rate_limit;
       if (err instanceof Anthropic.APIError && /credit balance/i.test(err.message)) return FAILURES.billing_error;
@@ -687,23 +702,7 @@ export class Brain {
     for (let step = 0; step < MAX_STEPS; step++) {
       this.fitHistory();
       const callStart = Date.now();
-      // Streamed so a plate with a motion sequence can run long without the request timing out.
-      const response = await this.client.beta.messages
-        .stream(
-          {
-            model: this.model,
-            max_tokens: 32000,
-            output_config: { effort: this.effort },
-            cache_control: { type: "ephemeral" },
-            betas: ["server-side-fallback-2026-07-01"],
-            fallbacks: "default",
-            system: SYSTEM,
-            tools: TOOLS,
-            messages: this.messages,
-          },
-          { signal: this.abort.signal },
-        )
-        .finalMessage();
+      const response = await this.turn();
 
       this.ui.trace?.({ kind: "model", ms: Date.now() - callStart, in: response.usage?.input_tokens, cached: response.usage?.cache_read_input_tokens, out: response.usage?.output_tokens, tools: response.content.filter((b) => b.type === "tool_use").map((b) => b.name) });
       if (response.stop_reason === "refusal") return "Sorry, I can't help with that one.";
@@ -729,6 +728,32 @@ export class Brain {
       this.messages.push({ role: "user", content: results });
     }
     return "That took more steps than I allow myself. Tell me where I got stuck and I'll keep going.";
+  }
+
+  // One model turn, on the provider this conversation started with. Streamed so a plate with a motion sequence can
+  // run long without the request timing out.
+  /** @returns {Promise<{ content: any[], stop_reason: string | null, usage?: any }>} */
+  async turn() {
+    if (this.provider !== "anthropic") {
+      if (!this.model) throw new ProviderError("model_not_found", 404, "No model chosen.");
+      return chatTurn({ provider: this.provider, key: this.ui.apiKey ?? "", model: this.model, effort: this.effort, system: SYSTEM, tools: TOOLS, messages: this.messages, maxTokens: 32000, signal: this.abort.signal });
+    }
+    return this.client.beta.messages
+      .stream(
+        {
+          model: this.model,
+          max_tokens: 32000,
+          output_config: { effort: this.effort },
+          cache_control: { type: "ephemeral" },
+          betas: ["server-side-fallback-2026-07-01"],
+          fallbacks: "default",
+          system: SYSTEM,
+          tools: TOOLS,
+          messages: this.messages,
+        },
+        { signal: this.abort.signal },
+      )
+      .finalMessage();
   }
 
   windowArgs(input) {

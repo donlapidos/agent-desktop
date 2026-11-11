@@ -11,6 +11,8 @@ import path from "node:path";
 import { SYSTEM, TOOLS } from "./brain.js";
 
 export const BRIDGE_FILE = "bridge.json";
+const LISTEN_TRIES = 20;
+const LISTEN_RETRY_MS = 500;
 // What Claude's apps are offered: written at every start and kept when Buddy closes, so a Claude session that starts
 // while Buddy is closed still lists Buddy's tools (and buddy-mcp starts Buddy on the first call).
 export const TOOLS_FILE = "claude-tools.json";
@@ -129,10 +131,18 @@ export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
     socket.on("close", gone);
     socket.on("error", gone);
   });
-  server.on("error", (err) => trace?.({ kind: "bridge-error", message: err.message }));
+  // A Buddy that just quit can hold the pipe name for a moment; keep trying for a while rather than stay unreachable.
+  let tries = 0;
+  /** @type {NodeJS.Timeout | undefined} */
+  let retry;
+  server.on("error", (/** @type {NodeJS.ErrnoException} */ err) => {
+    trace?.({ kind: "bridge-error", message: err.message, tries });
+    if (err.code === "EADDRINUSE" && ++tries <= LISTEN_TRIES) retry = setTimeout(() => server.listen(pipe), LISTEN_RETRY_MS);
+  });
   server.listen(pipe);
   return {
     close() {
+      clearTimeout(retry);
       server.close();
       fs.rmSync(file, { force: true });
     },

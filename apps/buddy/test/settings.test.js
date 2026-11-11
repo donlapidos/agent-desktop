@@ -92,3 +92,15 @@ test("a damaged file is set aside, and first-run setup isn't repeated", (t) => {
   assert.ok(fs.existsSync(`${file}.bad`), "the damaged file is kept for inspection");
   assert.ok(!fs.existsSync(file));
 });
+
+test("each provider keeps its own model; unknown providers and odd model ids are refused", () => {
+  const s = normalize({});
+  assert.equal(s.provider, "anthropic");
+  const a = update(s, { provider: "openai", providerModels: { openai: "gpt-5.1" } });
+  assert.deepEqual(a.rejected, []);
+  const b = update(a.settings, { providerModels: { openrouter: "anthropic/claude-sonnet-5.5" } });
+  assert.deepEqual(b.settings.providerModels, { openai: "gpt-5.1", openrouter: "anthropic/claude-sonnet-5.5" }, "changing one keeps the others");
+  assert.deepEqual(update(b.settings, { provider: "acme" }).rejected, ["provider"]);
+  assert.deepEqual(update(b.settings, { providerModels: { openai: "gpt 5; rm -rf" } }).rejected, ["providerModels.openai"]);
+  assert.equal(normalize({ providerModels: { anthropic: "x", openai: "" } }).providerModels.openai, undefined);
+});

@@ -126,8 +126,8 @@
     $("marks").classList.remove("on");
     $("where").textContent = nk ? "Welcome to Buddy" : target ? `Looking at ${target}` : "Buddy";
     $("input").type = nk ? "password" : "text";
-    $("input").placeholder = nk ? "Paste your Anthropic API key (sk-ant-…)" : "How do I…?  or  Do it for me";
-    if (nk) show("I need an Anthropic API key to think. It's stored encrypted on this PC.");
+    $("input").placeholder = nk ? "Paste an API key (Anthropic, OpenAI, OpenRouter, Gemini…)" : "How do I…?  or  Do it for me";
+    if (nk) show("I need an API key to think: Anthropic, OpenAI, OpenRouter or Gemini. It's stored encrypted on this PC. For DeepSeek, pick it in Settings first.");
     if (!busy) { $("input").disabled = false; $("input").value = ""; $("input").focus(); }
   });
 
@@ -210,12 +210,12 @@
     if (!text || busy) return;
     $("input").value = "";
     if (needsKey) {
-      const { ok } = await window.buddy.setKey(text);
+      const { ok, error } = await window.buddy.setKey(text);
       needsKey = !ok;
       $("input").type = "text";
       $("input").placeholder = "How do I…?  or  Do it for me";
       $("where").textContent = "Buddy";
-      show(ok ? "Got it. Ask me anything about what's on your screen." : "That didn't work. Try again.");
+      show(ok ? "Got it. Ask me anything about what's on your screen." : error ?? "That didn't work. Try again.");
       return;
     }
     setBusy(true);

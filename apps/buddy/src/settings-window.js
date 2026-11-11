@@ -13,7 +13,7 @@ const SIZE = { width: 640, height: 600 };
  *   change: (patch: object) => Record<string, string>,      // apply a change; returns problems by field
  *   capture: (on: boolean) => void,                         // let go of Buddy's shortcuts while one is recorded
  *   preview: (voice: number, speed: number) => void,        // say a line in that voice
- *   setKey: (key: string) => string | null,                 // returns an error message, or null
+ *   setKey: (key: string) => Promise<string | null>,        // resolves an error message, or null
  *   removeKey: () => void,
  *   setStartup: (on: boolean) => void,
  *   clear: (what: "explainers" | "log") => void,
@@ -74,7 +74,7 @@ export function createSettingsWindow(deps) {
   handle("settings-set", (patch) => ({ problems: deps.change(patch), state: deps.state() }));
   handle("settings-capture", (on) => deps.capture(!!on));
   handle("settings-preview", (voice, speed) => deps.preview(Number(voice), Number(speed)));
-  handle("settings-key", (key) => ({ error: deps.setKey(String(key ?? "")), state: deps.state() }));
+  handle("settings-key", async (key) => ({ error: await deps.setKey(String(key ?? "")), state: deps.state() }));
   handle("settings-key-remove", () => (deps.removeKey(), deps.state()));
   handle("settings-startup", (on) => (deps.setStartup(!!on), deps.state()));
   handle("settings-clear", (what) => {

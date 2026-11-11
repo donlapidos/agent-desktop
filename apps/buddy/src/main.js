@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import { AgentBrain } from "./agent-brain.js";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
 import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop, staleClaude } from "./claude-setup.js";
-import { Brain, SESSION_PREFIX, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
+import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
+import { PROVIDERS, ProviderError, keyFits, listModels, providerForKey } from "./providers.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
@@ -124,22 +125,50 @@ const toPhysicalRect = (r) => asPhysicalRect(process.platform === "win32" ? scre
 const toDipRect = (r) => asDipRect(process.platform === "win32" ? screen.screenToDipRect(null, r) : r);
 const cursor = () => asDipPoint(screen.getCursorScreenPoint());
 
-// ---------- API key (encrypted at rest with the OS keychain) ----------
+// ---------- API keys (encrypted at rest with the OS keychain), one per provider ----------
 
-const keyFile = () => path.join(app.getPath("userData"), "api-key.bin");
+// Anthropic's key keeps the file name it had before Buddy knew other providers.
+const keyFile = (/** @type {ProviderId} */ provider = currentProvider()) => path.join(app.getPath("userData"), provider === "anthropic" ? "api-key.bin" : `api-key-${provider}.bin`);
+const currentProvider = () => /** @type {ProviderId} */ (settings?.provider ?? "anthropic");
+const envKey = (/** @type {ProviderId} */ provider = currentProvider()) => process.env[PROVIDERS[provider].keyEnv ?? ""] || null;
 
-function loadApiKey() {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+function loadApiKey(/** @type {ProviderId} */ provider = currentProvider()) {
+  if (envKey(provider)) return envKey(provider);
   try {
-    return safeStorage.decryptString(fs.readFileSync(keyFile()));
+    return safeStorage.decryptString(fs.readFileSync(keyFile(provider)));
   } catch {
     return null;
   }
 }
 
-function saveApiKey(key) {
-  fs.mkdirSync(path.dirname(keyFile()), { recursive: true });
-  fs.writeFileSync(keyFile(), safeStorage.encryptString(key));
+function saveApiKey(/** @type {string} */ key, /** @type {ProviderId} */ provider) {
+  fs.mkdirSync(path.dirname(keyFile(provider)), { recursive: true });
+  fs.writeFileSync(keyFile(provider), safeStorage.encryptString(key));
+}
+
+// The chat models each provider offers for the saved key (providers.js listModels), fetched when a key is saved or
+// the provider changes. Anthropic's are the fixed list in settings.js.
+/** @type {Map<ProviderId, { models: string[], error: string | null, loading: boolean }>} */
+const providerModelLists = new Map();
+
+/** Fetches the provider's models; picks the best one if none is chosen yet. Resolves an error message, or null. */
+async function refreshModels(/** @type {ProviderId} */ provider = currentProvider(), key = loadApiKey(provider)) {
+  if (provider === "anthropic" || !key) return null;
+  providerModelLists.set(provider, { models: providerModelLists.get(provider)?.models ?? [], error: null, loading: true });
+  settingsWindow?.refresh();
+  let error = null;
+  let models = [];
+  try {
+    models = await listModels(provider, key);
+    if (!models.length) error = `${PROVIDERS[provider].label} didn't list any chat models for this key.`;
+  } catch (err) {
+    error = err instanceof ProviderError ? (failureFor(err.kind, provider) ?? err.message) : `Couldn't reach ${PROVIDERS[provider].label}: ${err?.message ?? err}`;
+  }
+  providerModelLists.set(provider, { models, error, loading: false });
+  const chosen = settings.providerModels[provider];
+  if (models.length && (!chosen || !models.includes(chosen))) changeSettings({ providerModels: { [provider]: models[0] } });
+  else settingsWindow?.refresh();
+  return error;
 }
 
 // ---------- Overlay: one transparent, click-through window per display ----------
@@ -744,7 +773,7 @@ function openExplainer(explainer, { near = cursor(), observed = null } = {}) {
 // ---------- IPC ----------
 
 ipcMain.handle("ask", async (_e, text, opts = {}) => {
-  if (!brain) return { reply: "Add your Anthropic API key first (Settings › Claude & privacy). No key? Ask me from Claude's own app on your Claude plan instead: Use with Claude, in the same place." };
+  if (!brain) return { reply: "Add an API key first (Settings › AI & privacy): Anthropic, OpenAI, OpenRouter, Gemini or DeepSeek. No key? Ask me from Claude's own app on your Claude plan instead: Use with Claude, in the same place." };
   // Typed while the mic was open: the typing wins.
   if (mode === "listening") voice.cancelListening();
   else if (mode !== "idle") return { reply: BUSY[mode] };
@@ -775,10 +804,26 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
   return { reply };
 });
 
-ipcMain.handle("set-key", (_e, key) => {
-  saveApiKey(key.trim());
-  startBrain();
-  return { ok: !!brain };
+// A key that plainly belongs to another provider (sk-ant-, sk-or-, AIza) is saved for that one, which becomes the
+// provider Buddy uses. Other providers' keys are tried on their model list before they're kept. Resolves an error
+// message, or null.
+async function setApiKey(/** @type {string} */ key) {
+  const k = key.trim();
+  const provider = providerForKey(k, currentProvider());
+  if (!keyFits(provider, k)) return `That doesn't look like a key from ${PROVIDERS[provider].label}. Get one at ${PROVIDERS[provider].keyFrom}.`;
+  if (provider !== "anthropic") {
+    const error = await refreshModels(provider, k);
+    if (error && !providerModelLists.get(provider)?.models.length) return error;
+  }
+  saveApiKey(k, provider);
+  if (provider !== currentProvider()) changeSettings({ provider });
+  else startBrain();
+  return null;
+}
+
+ipcMain.handle("set-key", async (_e, key) => {
+  const error = await setApiKey(String(key ?? ""));
+  return { ok: !error && !!brain, error };
 });
 
 ipcMain.on("cancel", () => {
@@ -1031,7 +1076,9 @@ function clearOldSessions() {
 // Where create_document saves, and how it opens the result (Word, or whatever opens .docx here).
 const documentsDir = () => path.join(app.getPath("documents"), "Buddy");
 // Spike: BUDDY_ENGINE=sdk runs conversations on the Claude Agent SDK (src/agent-brain.js).
-const makeEngine = (ui) => (process.env.BUDDY_ENGINE === "sdk" ? new AgentBrain({ ...ui, agentDir: path.join(app.getPath("userData"), "agent") }) : new Brain(ui));
+/** @typedef {import("./providers.js").ProviderId} ProviderId */
+// The Agent SDK engine runs Claude Code, so it only works with an Anthropic key.
+const makeEngine = (ui) => (process.env.BUDDY_ENGINE === "sdk" && currentProvider() === "anthropic" ? new AgentBrain({ ...ui, agentDir: path.join(app.getPath("userData"), "agent") }) : new Brain(ui));
 const openFile = (file) => shell.openPath(file);
 
 // The bubble's plates open beside what the user pointed at and say which app it was in.
@@ -1043,7 +1090,7 @@ function bubbleExplain(plate) {
 function startBrain() {
   const apiKey = loadApiKey();
   brain = apiKey
-    ? makeEngine({ apiKey, point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
+    ? makeEngine({ apiKey, provider: currentProvider(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
     : null;
 }
 
@@ -1149,7 +1196,7 @@ function startTasks() {
     icon: ICON,
     makeBrain: (ui) => {
       const apiKey = loadApiKey();
-      return apiKey ? makeEngine({ apiKey, trace, documentsDir: documentsDir(), openFile, ...ui }) : null;
+      return apiKey ? makeEngine({ apiKey, provider: currentProvider(), trace, documentsDir: documentsDir(), openFile, ...ui }) : null;
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,
@@ -1259,7 +1306,11 @@ function changeSettings(patch) {
   if (!hotkeysSuspended && JSON.stringify(next.hotkeys) !== JSON.stringify(before.hotkeys)) registerHotkeys();
   if (next.accent !== before.accent) paintAccentEverywhere();
   if (next.appearance !== before.appearance) applyAppearance();
-  if (next.model !== before.model || next.effort !== before.effort) setBrainDefaults(settings);
+  if (next.model !== before.model || next.effort !== before.effort || JSON.stringify(next.providerModels) !== JSON.stringify(before.providerModels)) setBrainDefaults(settings);
+  if (next.provider !== before.provider) {
+    startBrain();
+    refreshModels();
+  }
   setAgentPolicy(settings);
   if (next.language !== before.language) voice?.prepare();
   if (next.talkBack === "never" && before.talkBack !== "never") voice?.hush();
@@ -1360,7 +1411,6 @@ function buildTrayMenu() {
 // ---------- The Settings window ----------
 
 const PREVIEW_LINE = "Hi, I'm Buddy. Click the Formulas tab, and I'll show you the next step.";
-const ANTHROPIC_KEY = /^sk-ant-[A-Za-z0-9_-]{20,}$/;
 const explainersDir = () => path.join(app.getPath("userData"), "explainers");
 const timingLog = () => path.join(app.getPath("userData"), "timing.log");
 
@@ -1392,7 +1442,9 @@ function settingsState() {
       appearance: !!process.env.BUDDY_THEME,
     },
     taken: takenHotkeys(),
-    key: { saved: fs.existsSync(keyFile()), fromEnv: !!process.env.ANTHROPIC_API_KEY },
+    key: { saved: fs.existsSync(keyFile()), fromEnv: !!envKey(), env: PROVIDERS[currentProvider()].keyEnv },
+    providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, keyFrom: p.keyFrom, placeholder: p.placeholder, saved: !!envKey(p.id) || fs.existsSync(keyFile(p.id)) })),
+    providerModels: providerModelLists.get(currentProvider()) ?? { models: [], error: null, loading: false },
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
     claude: claudeStatus(),
@@ -1466,16 +1518,10 @@ const settingsWindow = createSettingsWindow({
   change: changeSettings,
   capture: suspendHotkeys,
   preview: (sid, speed) => voice?.say(PREVIEW_LINE, { sid: Math.min(VOICES - 1, Math.max(0, Math.trunc(sid) || 0)), speed: Math.min(SPEED.max, Math.max(SPEED.min, speed || 1)) }),
-  setKey: (key) => {
-    const k = key.trim();
-    if (!ANTHROPIC_KEY.test(k)) return "That doesn't look like an Anthropic API key. They start with sk-ant-.";
-    saveApiKey(k);
-    startBrain();
-    return null;
-  },
+  setKey: setApiKey,
   removeKey: () => {
     fs.rmSync(keyFile(), { force: true });
-    if (!process.env.ANTHROPIC_API_KEY) brain = null;
+    if (!envKey()) brain = null;
   },
   setStartup: (on) => process.platform === "win32" && setStartsWithWindows(on),
   clear: (what) => {
@@ -1525,6 +1571,7 @@ app.whenReady().then(() => {
   if (loaded.recovered) trace({ kind: "settings-recovered", note: "settings.json couldn't be read; kept as settings.json.bad" });
   applyAppearance();
   setBrainDefaults(settings);
+  refreshModels().catch(() => {});
   setAgentPolicy(settings);
   app.setAppUserModelId(APP_ID);
   const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_SETTINGS_TEST || process.env.BUDDY_APPROVAL_TEST || process.env.BUDDY_THEME;

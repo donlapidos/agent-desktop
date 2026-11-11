@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Brain, FAILURES } from "../src/brain.js";
+import { Brain, FAILURES, setBrainDefaults } from "../src/brain.js";
 
 // A Brain wired to a fake UI. No request reaches the API or the desktop in these tests: every approval is declined.
 function brain(confirm = async () => "deny") {
@@ -104,4 +104,27 @@ test("model failures are told in words the user can act on", () => {
   assert.match(FAILURES.billing_error, /out of credit/);
   assert.match(FAILURES.billing_error, /console\.anthropic\.com/);
   for (const text of Object.values(FAILURES)) assert.doesNotMatch(text, /\b(4\d\d|5\d\d)\b|error/i, "no status codes or jargon");
+});
+
+test("Buddy answers through an OpenAI-style provider, and says its failures in that provider's words", async () => {
+  setBrainDefaults({ model: "claude-opus-5-5", effort: "low", providerModels: { openai: "gpt-test" } });
+  const realFetch = globalThis.fetch;
+  const sent = [];
+  let reply = { status: 200, body: `data: ${JSON.stringify({ choices: [{ delta: { content: "Click Data, then Sort." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n` };
+  globalThis.fetch = async (url, init) => (sent.push({ url: String(url), body: JSON.parse(init.body), auth: init.headers.authorization }), new Response(reply.body, { status: reply.status }));
+  try {
+    const b = new Brain({ apiKey: "sk-proj-test", provider: "openai", point: async () => {}, confirm: async () => "deny", status: () => {} });
+    assert.equal(await b.run(null, "How do I sort?"), "Click Data, then Sort.");
+    assert.equal(sent[0].url, "https://api.openai.com/v1/chat/completions");
+    assert.equal(sent[0].body.model, "gpt-test");
+    assert.equal(sent[0].auth, "Bearer sk-proj-test");
+    assert.ok(sent[0].body.tools.some((t) => t.function.name === "point_at"), "Buddy's tools go along");
+    reply = { status: 429, body: JSON.stringify({ error: { message: "You exceeded your current quota", code: "insufficient_quota" } }) };
+    const said = await b.run(null, "And filter?");
+    assert.match(said, /OpenAI account is out of credit/);
+    assert.match(said, /platform\.openai\.com/);
+  } finally {
+    globalThis.fetch = realFetch;
+    setBrainDefaults({ model: "claude-opus-5-5", effort: "medium" });
+  }
 });

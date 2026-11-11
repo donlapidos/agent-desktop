@@ -191,7 +191,7 @@
     <button data-page="keys"><svg class="i" viewBox="0 0 16 16"><rect x="1.8" y="4" width="12.4" height="8.5" rx="1.6"/><path d="M4.5 6.8h.01M7 6.8h.01M9.5 6.8h.01M12 6.8h.01M5 9.8h6"/></svg>Shortcuts</button>
     <button data-page="agents"><svg class="i" viewBox="0 0 16 16"><path d="M3 2.5 13 7.2 8.2 8.4 6.4 13z"/></svg>Agents</button>
     <button data-page="routines"><svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8.5" r="5.7"/><path d="M8 5.3v3.4l2.2 1.4M6 1.5h4"/></svg>Routines</button>
-    <button data-page="claude"><svg class="i" viewBox="0 0 16 16"><path d="M8 1.8 13 3.8v4c0 3-2.2 5.3-5 6.4C5.2 13.1 3 10.8 3 7.8v-4z"/><path d="m6 8 1.5 1.5L10.3 6.6"/></svg>Claude &amp; privacy</button>
+    <button data-page="claude"><svg class="i" viewBox="0 0 16 16"><path d="M8 1.8 13 3.8v4c0 3-2.2 5.3-5 6.4C5.2 13.1 3 10.8 3 7.8v-4z"/><path d="m6 8 1.5 1.5L10.3 6.6"/></svg>AI &amp; privacy</button>
     <button data-page="about"><svg class="i" viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>About &amp; updates</button>
     <div class="foot">
       <button class="link" id="feature">Request a feature</button>
@@ -336,8 +336,13 @@
     </section>
 
     <section id="page-claude" hidden>
-      <h2>Claude &amp; privacy</h2>
-      <p class="lede">Buddy thinks with your own Anthropic API key, or works inside Claude's own apps on your Claude plan. Questions, and what's on screen when you ask, go to Anthropic. Besides that, Buddy only downloads its voice models once and checks GitHub for updates.</p>
+      <h2>AI &amp; privacy</h2>
+      <p class="lede">Buddy thinks with the AI provider you choose, on your own API key, or works inside Claude's own apps on your Claude plan. Questions, and what's on screen when you ask, go to that provider. Besides that, Buddy only downloads its voice models once and checks GitHub for updates.</p>
+      <div class="group">
+        <h3>Provider</h3>
+        <p class="help">Each provider keeps its own key, so you can switch back and forth.</p>
+        <div class="seg" id="provider" role="group" aria-label="Provider"></div>
+      </div>
       <div class="group">
         <h3>API key</h3>
         <div id="key"></div>
@@ -353,6 +358,8 @@
         <h3>Model</h3>
         <p class="help">Applies to new conversations.</p>
         <div class="models" id="models" role="radiogroup" aria-label="Model"></div>
+        <div class="row" id="provider-model" hidden><select class="field" id="model-select" aria-label="Model"></select></div>
+        <p class="note" id="model-note"></p>
         <p class="fixed" id="model-fixed" hidden>Set by BUDDY_MODEL, which overrides this.</p>
       </div>
       <div class="group">
@@ -584,7 +591,7 @@
     const box = $("key");
     box.replaceChildren();
     if (S.key.fromEnv) {
-      box.append(el("div", { className: "status" }, el("span", { className: "dot" }), "Using ANTHROPIC_API_KEY from the environment."));
+      box.append(el("div", { className: "status" }, el("span", { className: "dot" }), `Using ${S.key.env} from the environment.`));
     } else if (S.key.saved && !replacingKey) {
       const replace = el("button", { className: "btn", textContent: "Replace key" });
       replace.addEventListener("click", () => { replacingKey = true; renderClaude(); $("key-input")?.focus(); });
@@ -602,7 +609,7 @@
       }
       box.append(el("div", { className: "status" }, el("span", { className: "dot" }), "A key is saved, encrypted on this PC."), actions);
     } else {
-      const input = el("input", { className: "field", id: "key-input", type: "password", placeholder: "sk-ant-…", autocomplete: "off", spellcheck: false });
+      const input = el("input", { className: "field", id: "key-input", type: "password", placeholder: provider().placeholder, autocomplete: "off", spellcheck: false });
       const save = el("button", { className: "btn primary", textContent: "Save key" });
       const submit = async () => {
         if (!input.value.trim()) return;
@@ -622,15 +629,40 @@
         row.append(cancel);
       }
       box.append(
-        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : "No key yet. Buddy's own chat needs one; Use with Claude, below, doesn't."),
+        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : `No ${provider().label} key yet. Buddy's own chat needs one; Use with Claude, below, doesn't.`),
         row,
-        el("p", { className: "note", textContent: "Get one at console.anthropic.com. It's stored encrypted with Windows and never shown again." }),
+        el("p", { className: "note", textContent: `Get one at ${provider().keyFrom}. It's stored encrypted with Windows and never shown again.` }),
       );
     }
   }
 
+  const provider = () => S.providers.find((p) => p.id === S.settings.provider) ?? S.providers[0];
+
+  function renderModel() {
+    const s = S.settings;
+    const own = s.provider !== "anthropic";
+    $("models").hidden = own;
+    $("provider-model").hidden = !own;
+    const note = $("model-note");
+    note.textContent = "";
+    if (!own) return;
+    const list = S.providerModels;
+    const chosen = s.providerModels[s.provider] ?? "";
+    const ids = list.models.length ? list.models : chosen ? [chosen] : [];
+    const select = $("model-select");
+    select.disabled = S.fixed.model || !ids.length;
+    select.replaceChildren(...ids.map((id) => el("option", { value: id, textContent: id, selected: id === chosen })));
+    select.onchange = () => set({ providerModels: { [s.provider]: select.value } });
+    note.textContent = list.loading ? `Asking ${provider().label} which models your key can use…`
+      : list.error ? list.error
+      : !provider().saved ? "Save a key above to see the models it can use."
+      : "Models your key can use, best first. Pick one that can see images and use tools.";
+  }
+
   function renderClaudeRest() {
     const s = S.settings;
+    segmented($("provider"), S.providers.map((p) => [p.id, p.label]), s.provider, (v) => { replacingKey = false; $("key-problem").textContent = ""; set({ provider: v }); });
+    renderModel();
     $("models").replaceChildren(...S.models.map((m) => {
       const b = el("button", { className: "model", disabled: S.fixed.model }, el("span", { className: "radio" }), el("b", { textContent: m.label }), el("span", { textContent: m.note }));
       b.setAttribute("role", "radio");

@@ -22,6 +22,10 @@ export const MODELS = Object.freeze([
 ]);
 
 export const EFFORTS = Object.freeze(["low", "medium", "high"]);
+// Who Buddy thinks with (providers.js). Each provider other than Anthropic has its own model, chosen from the list the
+// provider gives for the user's key, so model ids there are only checked for shape.
+export const PROVIDER_CHOICES = Object.freeze(["anthropic", "openai", "openrouter", "gemini", "deepseek"]);
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\/@-]{0,119}$/;
 export const TALK_BACK = Object.freeze(["spoken", "always", "never"]);
 export const APPEARANCES = Object.freeze(["system", "light", "dark"]);
 export const VOICES = 10; // Supertonic voices 0-9
@@ -50,7 +54,9 @@ export const DEFAULTS = Object.freeze({
   accent: "blue",
   appearance: "system",
   hotkeys: Object.freeze({ ask: "Control+Alt+B", talk: "Control+Alt+T", mark: "Control+Alt+M", explain: "Control+Alt+E", dictate: "Control+Alt+D" }),
+  provider: "anthropic",
   model: "claude-opus-5-5",
+  providerModels: Object.freeze({}),
   effort: "medium",
   dictateStop: "pause",
   language: "en",
@@ -67,7 +73,7 @@ export const DEFAULTS = Object.freeze({
  * @typedef {{ id: string, name: string, prompt: string, schedule: Schedule, enabled: boolean, lastRun: string | null }} Routine
  * @typedef {{
  *   voice: number, speed: number, talkBack: string, accent: string, appearance: string,
- *   hotkeys: Record<HotkeyName, string>, model: string, effort: string, dictateStop: string, language: string,
+ *   hotkeys: Record<HotkeyName, string>, provider: string, model: string, providerModels: Record<string, string>, effort: string, dictateStop: string, language: string,
  *   rope: string, trustedApps: string[], blockedApps: string[], routines: Routine[], autoUpdate: boolean,
  *   launchSetupDone: boolean,
  * }} Settings
@@ -147,6 +153,14 @@ export function isHotkey(accel) {
 const round = (n, step) => Math.round(n / step) * step;
 const pick = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback);
 
+/** @returns {Record<string, string>} */
+function providerModels(value) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const id of PROVIDER_CHOICES.filter((x) => x !== "anthropic")) if (MODEL_ID.test(value?.[id] ?? "")) out[id] = value[id];
+  return out;
+}
+
 /**
  * A complete, valid settings object from anything: unknown keys are dropped, invalid values take their default.
  * @param {any} raw
@@ -172,7 +186,9 @@ export function normalize(raw) {
     accent: Object.hasOwn(ACCENTS, r.accent) ? r.accent : DEFAULTS.accent,
     appearance: pick(r.appearance, APPEARANCES, DEFAULTS.appearance),
     hotkeys,
+    provider: pick(r.provider, PROVIDER_CHOICES, DEFAULTS.provider),
     model: pick(r.model, MODELS.map((m) => m.id), DEFAULTS.model),
+    providerModels: providerModels(r.providerModels),
     effort: pick(r.effort, EFFORTS, DEFAULTS.effort),
     dictateStop: pick(r.dictateStop, DICTATE_STOP, DEFAULTS.dictateStop),
     language: pick(r.language, LANGUAGES, DEFAULTS.language),
@@ -199,11 +215,15 @@ export function update(current, patch) {
     const clash = HOTKEY_NAMES.some((other) => other !== name && hotkeys[other] === accel);
     if (!clash) hotkeys[name] = accel;
   }
-  const merged = { ...current, ...p, hotkeys };
+  // A provider's model is changed one provider at a time; the others keep theirs.
+  const models = p.providerModels && typeof p.providerModels === "object" ? { ...current.providerModels, ...p.providerModels } : current.providerModels;
+  const merged = { ...current, ...p, hotkeys, providerModels: models };
   const next = normalize(merged);
   const rejected = [];
   for (const [k, v] of Object.entries(p)) {
-    if (k === "hotkeys") {
+    if (k === "providerModels") {
+      for (const [id, model] of Object.entries(v ?? {})) if (next.providerModels[id] !== model) rejected.push(`providerModels.${id}`);
+    } else if (k === "hotkeys") {
       for (const [name, accel] of Object.entries(v ?? {})) if (next.hotkeys[name] !== accel) rejected.push(`hotkeys.${name}`);
     } else if (Array.isArray(next[k])) {
       // Lists are tidied on the way in (names trimmed, defaults filled); only a dropped entry counts as refused.
