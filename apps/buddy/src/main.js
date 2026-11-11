@@ -1888,7 +1888,10 @@ app.whenReady().then(() => {
   setAgentPolicy(settings);
   app.setAppUserModelId(APP_ID);
   const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_SETTINGS_TEST || process.env.BUDDY_APPROVAL_TEST || process.env.BUDDY_FILES_TEST || process.env.BUDDY_THEME;
-  if (!devRun) firstRunSetup();
+  // First-run setup (shortcuts, start with Windows) changes the user's PC, so only the real Buddy does it: never a dev
+  // check, and never a test copy with a data folder of its own (--user-data-dir), which would otherwise leave a second
+  // copy starting at sign-in.
+  if (!devRun && !app.commandLine.hasSwitch("user-data-dir")) firstRunSetup();
   lockExplainerSession();
   clearOldSessions();
   startBrain();

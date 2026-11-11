@@ -1,8 +1,9 @@
 // End-to-end checks: the real app, run as separate test copies (each with its own data folder, so the user's Buddy,
 // settings and files are left alone), each driven by one of main.js's BUDDY_*_TEST hooks. The runner reads what each
 // copy prints, checks it, and keeps the screenshots.
-//   npm run e2e                  files, tasks, settings, explainer, voice
+//   npm run e2e                  files, tasks, settings, explainer, voice, firstrun
 //   npm run e2e -- tasks voice   only those
+//   npm run e2e -- --exe "<path to Desktop Buddy.exe>"   against a built or installed copy
 //   npm run e2e -- --interactive also the marker (a full-screen freeze frame) and approval clicks (moves the mouse)
 // Windows appear briefly while it runs. Nothing touches the clipboard, real files or the mouse unless --interactive.
 import { spawn, spawnSync } from "node:child_process";
@@ -16,6 +17,9 @@ const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const electron = path.join(app, "node_modules", "electron", "dist", "electron.exe");
 const out = path.join(app, "e2e-out", new Date().toISOString().replace(/[:.]/g, "-"));
 fs.mkdirSync(out, { recursive: true });
+// --exe <path>: run the checks against a built or installed Buddy instead of the source tree.
+const exeArg = process.argv.indexOf("--exe");
+const installed = exeArg >= 0 ? path.resolve(process.argv[exeArg + 1]) : null;
 const realModels = path.join(process.env.APPDATA ?? "", "desktop-buddy", "models");
 
 // ---------- A scripted OpenAI-style model, for the files check ----------
@@ -47,8 +51,9 @@ function scriptedModel() {
 function runCopy(name, env, done, timeoutMs = 90_000) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), `buddy-e2e-${name}-`));
   const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ANTHROPIC|OPENAI|OPENROUTER|GEMINI|DEEPSEEK)_|^BUDDY_/.test(k)));
-  const child = spawn(electron, [".", `--user-data-dir=${data}`], {
-    cwd: app,
+  // The source tree on Electron, or (--exe) a built or installed Buddy.
+  const child = spawn(installed ?? electron, [...(installed ? [] : ["."]), `--user-data-dir=${data}`], {
+    cwd: installed ? path.dirname(installed) : app,
     env: { ...clean, BUDDY_E2E: "1", ...(fs.existsSync(realModels) ? { BUDDY_MODELS_DIR: realModels } : {}), ...env },
     windowsHide: false,
   });
@@ -92,6 +97,22 @@ function runCopy(name, env, done, timeoutMs = 90_000) {
 
 /** Refused state changes seen in any copy's log (see runCopy). */
 const refusals = [];
+
+/** The user's start-with-Windows entries and Buddy shortcuts, to see that a check left them alone. */
+function machineState() {
+  /** @type {Record<string, string>} */
+  const state = {};
+  const run = spawnSync("reg", ["query", String.raw`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`], { encoding: "utf8", windowsHide: true }).stdout ?? "";
+  for (const line of run.split(/\r?\n/)) {
+    const m = line.match(/^\s+(.+?)\s+REG_\w+\s+(.*)$/);
+    if (m) state[`Run: ${m[1]}`] = m[2];
+  }
+  const desktop = spawnSync("powershell", ["-NoProfile", "-Command", "[Environment]::GetFolderPath('Desktop')"], { encoding: "utf8", windowsHide: true }).stdout.trim();
+  for (const dir of [desktop, path.join(process.env.APPDATA ?? "", "Microsoft", "Windows", "Start Menu", "Programs")]) {
+    for (const f of fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => /buddy/i.test(n)) : []) state[path.join(dir, f)] = String(fs.statSync(path.join(dir, f)).mtimeMs);
+  }
+  return state;
+}
 
 // ---------- The checks ----------
 
@@ -185,6 +206,15 @@ const CHECKS = {
     return [!heard.includes("formulas") && `heard ${heard || "nothing"}`, !markers.VOICE_SAID && "the reply wasn't played"].filter(Boolean);
   },
 
+  // A plain test copy (no dev hook, its own data folder) must leave the user's PC as it was: no start-with-Windows
+  // entry, no shortcuts. One once did, and would have started a second Buddy at every sign-in.
+  async firstrun() {
+    const before = machineState();
+    await runCopy("firstrun", {}, "NEVER", 12_000);
+    const after = machineState();
+    return Object.keys({ ...before, ...after }).filter((k) => before[k] !== after[k]).map((k) => `changed ${k}: ${before[k] ?? "(none)"} -> ${after[k] ?? "(none)"}`);
+  },
+
   mark: {
     interactive: true,
     async run() {
@@ -214,6 +244,8 @@ const CHECKS = {
 // ---------- Run ----------
 
 const args = process.argv.slice(2);
+const exeAt = args.indexOf("--exe");
+if (exeAt >= 0) args.splice(exeAt, 2);
 const interactive = args.includes("--interactive");
 const named = args.filter((a) => !a.startsWith("--"));
 const chosen = Object.entries(CHECKS).filter(([name, c]) => (named.length ? named.includes(name) : typeof c === "function" || (interactive && c.interactive)));
