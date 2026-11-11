@@ -341,6 +341,8 @@ export const TOOLS = [
         ref: str("Target ref from the latest look. Required for every action except press."),
         text: str("Text for set_value, type and select."),
         keys: str("Key combo for press, like ctrl+s or enter."),
+        app: str("For press: the app the keys are for (from list_windows). Defaults to the user's window."),
+        window_id: str("For press: which of that app's windows (from list_windows)."),
         summary: str("Plain-language description the user sees in the approval card, like 'Click Save'."),
       },
       required: ["action", "summary"],
@@ -540,6 +542,7 @@ const spokenNote = (lang) =>
  *   record?: (change: Omit<import("./activity.js").Change, "id" | "at">) => void,
  *   source?: string,
  *   reveal?: (files: string[]) => Promise<void> | void,
+ *   isOwnWindow?: (win: { pid?: number }) => boolean,
  *   openFile?: (file: string) => Promise<string>,
  *   agentDir?: string,
  * }} BrainUI
@@ -827,6 +830,13 @@ export class Brain {
       .finalMessage();
   }
 
+  /** The window in front right now, from list-windows, or null. */
+  async frontWindow() {
+    const res = await observe(["list-windows"], { timeoutMs: 10_000, session: this.session });
+    const list = res.ok ? (Array.isArray(res.data) ? res.data : res.data?.windows ?? []) : [];
+    return list.find((w) => w.is_focused) ?? null;
+  }
+
   windowArgs(input) {
     if (input.app) return ["--app", input.app, ...(input.window_id ? ["--window-id", input.window_id] : [])];
     if (this.target) return ["--app", this.target.app_name, "--window-id", input.window_id ?? this.target.id];
@@ -1076,8 +1086,16 @@ export class Brain {
     const how = { note: input.summary, status: input.summary };
     if (input.action === "press") {
       if (!input.keys) return "press needs keys.";
-      const app = this.target ? ["--app", this.target.app_name] : [];
-      return this.operate({ kind: "press", app: this.target?.app_name, args: ["press", input.keys, ...app], headed: true, summary: this.describeAction(input) }, how);
+      // The keys go to one named window, and that window's app is what the Agents rules judge: the one given, else the
+      // conversation's window, else the window in front right now. Pressing into whatever has focus would let keys
+      // land in an app the rules never saw (a blocked password manager), or in one that came to the front while the
+      // user read the card.
+      const win = input.app ? { app_name: String(input.app), id: input.window_id } : this.target ?? (await this.frontWindow());
+      if (!win?.app_name) return "Couldn't tell which window the keys would go to. Use list_windows, then press with app (and window_id).";
+      if (this.ui.isOwnWindow?.(win)) return "Buddy's own window is in front. Say which app the keys are for: press with app (and window_id) from list_windows.";
+      const args = ["press", input.keys, "--app", win.app_name, ...(win.id ? ["--window-id", String(win.id)] : [])];
+      const where = String(win.app_name).replace(/\.exe$/i, "");
+      return this.operate({ kind: "press", app: win.app_name, args, headed: true, summary: `${this.describeAction(input)} in ${where}` }, how);
     }
     const spec = ACTION_ARGS[input.action];
     if (!spec) return `Unknown action ${input.action}.`;

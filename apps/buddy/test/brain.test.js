@@ -130,3 +130,52 @@ test("Buddy answers through an OpenAI-style provider, and says its failures in t
     setBrainDefaults({ model: "claude-opus-5-5", effort: "medium" });
   }
 });
+
+test("a keypress goes to one named window, and the Agents rules judge that window's app", async () => {
+  const { setAgentPolicy } = await import("../src/brain.js");
+  setAgentPolicy({ rope: "ask", trustedApps: [], blockedApps: ["KeePass"] });
+  try {
+    // No window known (a routine): the one in front is judged, and a blocked app gets no card at all.
+    const { b, cards } = brain();
+    b.target = null;
+    b.frontWindow = async () => ({ app_name: "KeePass.exe", id: "w-9", pid: 4242, is_focused: true });
+    const blocked = await b.act({ action: "press", keys: "ctrl+a", summary: "Select all" });
+    assert.match(blocked, /^Not allowed: .*KeePass/);
+    assert.equal(cards.length, 0);
+
+    // The card says where the keys go.
+    b.frontWindow = async () => ({ app_name: "EXCEL.EXE", id: "w-3", pid: 77, is_focused: true });
+    assert.equal(await b.act({ action: "press", keys: "ctrl+s", summary: "Save" }), "The user declined.");
+    assert.equal(cards.at(-1)[0], "Press ctrl+s in EXCEL");
+
+    // A window named by the model, or the conversation's, beats the one in front.
+    b.target = { app_name: "WINWORD.EXE", id: "w-5" };
+    await b.act({ action: "press", keys: "ctrl+b", summary: "Bold" });
+    assert.equal(cards.at(-1)[0], "Press ctrl+b in WINWORD");
+    await b.act({ action: "press", keys: "ctrl+b", app: "KeePass.exe", window_id: "w-9", summary: "Bold" });
+    assert.equal(cards.length, 2, "naming a blocked app is blocked too: no card");
+
+    // Nothing to name, or Buddy's own window in front: no keys, and the model is told what to do.
+    b.target = null;
+    b.frontWindow = async () => null;
+    assert.match(await b.act({ action: "press", keys: "enter", summary: "Enter" }), /Couldn't tell which window/);
+    b.ui.isOwnWindow = (w) => w.pid === 1;
+    b.frontWindow = async () => ({ app_name: "electron.exe", id: "w-1", pid: 1, is_focused: true });
+    assert.match(await b.act({ action: "press", keys: "enter", summary: "Enter" }), /Buddy's own window is in front/);
+    assert.equal(cards.length, 2, "neither asked");
+  } finally {
+    setAgentPolicy(null);
+  }
+});
+
+test("the slip for a keypress names the window it was judged for", async () => {
+  const { b } = brain(async () => "allow");
+  b.target = null;
+  b.frontWindow = async () => ({ app_name: "EXCEL.EXE", id: "w-3", pid: 77, is_focused: true });
+  const action = await new Promise((resolve) => {
+    b.operate = async (a) => resolve(a);
+    b.act({ action: "press", keys: "ctrl+s", summary: "Save" });
+  });
+  assert.deepEqual(action.args, ["press", "ctrl+s", "--app", "EXCEL.EXE", "--window-id", "w-3"], "the keys can't land anywhere but the judged window");
+  assert.equal(action.app, "EXCEL.EXE");
+});

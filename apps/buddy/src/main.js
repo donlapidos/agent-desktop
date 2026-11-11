@@ -1294,7 +1294,7 @@ const providerUI = () => ({ apiKey: loadApiKey() ?? "", provider: currentProvide
 
 function startBrain() {
   brain = providerReady()
-    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, reveal: revealMade, openFile })
+    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, reveal: revealMade, isOwnWindow: (w) => ownPids().includes(Number(w.pid)), openFile })
     : null;
 }
 
@@ -1354,6 +1354,7 @@ function makeAppBrain(/** @type {number} */ conn, /** @type {string} */ client) 
     trace,
     documentsDir: documentsDir(),
     openFile,
+    isOwnWindow: (w) => ownPids().includes(Number(w.pid)),
   });
   return appBrain;
 }
@@ -1438,7 +1439,7 @@ function startTasks() {
     here,
     icon: ICON,
     makeBrain: (ui) => {
-      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, reveal: revealMade, openFile, ...ui }) : null;
+      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), record: recordChange, reveal: revealMade, isOwnWindow: (w) => ownPids().includes(Number(w.pid)), openFile, ...ui }) : null;
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,
