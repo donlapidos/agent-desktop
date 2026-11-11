@@ -408,10 +408,76 @@ export function findControl(tree, target, role) {
     for (const c of n.children ?? []) walk(c);
   };
   walk(tree);
-  if (!found.length) return null;
+  if (!found.length) return closeControl(tree, target, wantRole);
   const best = Math.max(...found.map((f) => f.rank));
   const top = found.filter((f) => f.rank === best).map((f) => f.node);
   return top.length === 1 ? { node: top[0] } : { candidates: top };
+}
+
+// Near misses: the model says "Sort Largest to Smallest", Excel says "Sort Z to A"; "Preferences" is "Options". Names
+// become sets of meaning-words: phrases and words that mean the same are made one, filler words dropped.
+/** @type {[RegExp, string][]} */
+const SAME_PHRASE = [
+  [/\b(z to a|largest to smallest|highest to lowest|newest to oldest|descending)\b/g, " descending "],
+  [/\b(a to z|smallest to largest|lowest to highest|oldest to newest|ascending)\b/g, " ascending "],
+  [/\bsave a copy\b/g, " save as "],
+];
+/** @type {Record<string, string>} keyed by the singular */
+const SAME_WORD = { option: "setting", preference: "setting", remove: "delete", erase: "delete", exit: "close", quit: "close", create: "new", add: "new", modify: "edit", change: "edit", photo: "picture", image: "picture", pic: "picture" };
+const singular = (/** @type {string} */ w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
+const FILLER = new Set(["the", "a", "an", "to", "of", "for", "and", "in", "on", "with", "button", "tab", "menu", "item", "option", "this", "your", "my", "click", "select"]);
+
+/** A label's meaning-words. */
+export function meaningWords(/** @type {string} */ s) {
+  let t = ` ${plainName(s).replace(/\(.*?\)/g, " ")} `;
+  for (const [re, to] of SAME_PHRASE) t = t.replace(re, to);
+  return new Set(t.split(/[^a-z0-9]+/).filter((w) => w && !FILLER.has(w)).map((w) => SAME_WORD[singular(w)] ?? singular(w)));
+}
+
+/** How much of what's wanted a label covers, 0 to 1. */
+const cover = (/** @type {Set<string>} */ want, /** @type {Set<string>} */ has) => (want.size ? [...want].filter((w) => has.has(w)).length / want.size : 0);
+
+/**
+ * The control a name means when no label contains it: the one whose meaning-words cover at least two thirds of the
+ * wanted ones, clearly ahead of the rest (a matching role breaks a tie). { node, near: true }, { candidates }, or null.
+ */
+function closeControl(tree, target, wantRole) {
+  const want = meaningWords(target);
+  if (!want.size) return null;
+  /** @type {{ node: any, score: number }[]} */
+  const scored = [];
+  const walk = (n) => {
+    if (!n) return;
+    if (n.ref_id && n.bounds && n.name && !(n.states ?? []).includes("offscreen")) {
+      const has = meaningWords(n.name);
+      // Extra words in the label count a little against it, so "Sort" beats "Sort by colour" for "sort".
+      const score = cover(want, has) - Math.max(0, has.size - want.size) * 0.05 + (wantRole && String(n.role ?? "").toLowerCase().includes(wantRole) ? 0.05 : 0);
+      if (cover(want, has) >= 2 / 3) scored.push({ node: n, score });
+    }
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(tree);
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.score - a.score);
+  if (scored.length > 1 && scored[0].score - scored[1].score < 0.04) return { candidates: scored.filter((s) => scored[0].score - s.score < 0.04).map((s) => s.node) };
+  return { node: scored[0].node, near: true };
+}
+
+/** The labels on screen closest to a name, for the log when nothing matched (what to teach the matcher next). */
+export function nearestNames(tree, target, max = 5) {
+  const want = meaningWords(target);
+  /** @type {{ name: string, score: number }[]} */
+  const out = [];
+  const walk = (n) => {
+    if (!n) return;
+    if (n.ref_id && n.name) {
+      const score = cover(want, meaningWords(n.name));
+      if (score > 0) out.push({ name: String(n.name).slice(0, 60), score });
+    }
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(tree);
+  return out.sort((a, b) => b.score - a.score).slice(0, max).map((x) => x.name);
 }
 
 // Follows the user through a guided walk-through. `steps` are texts that appear as they go (the step Buddy pointed

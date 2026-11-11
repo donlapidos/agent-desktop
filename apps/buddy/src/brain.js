@@ -2,7 +2,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { askUser, requestApproval } from "./approvals.js";
 import { decide } from "./policy.js";
-import { findControl, observe, perform, renderReading, renderTree, snapshotResilient, waitForProgress } from "./desktop.js";
+import { findControl, nearestNames, observe, perform, renderReading, renderTree, snapshotResilient, waitForProgress } from "./desktop.js";
 import { writeDocx } from "./documents.js";
 import { PROVIDERS, ProviderError, capsOf, chatTurn } from "./providers.js";
 import { BEYOND_SCREEN, PC_TOOLS, PC_TOOL_NAMES, placesHere, runPcTool } from "./pc-tools.js";
@@ -1025,7 +1025,15 @@ export class Brain {
       }
       const { text } = renderTree(res.data.tree, this.bounds, undefined, this.labels);
       this.noteApp(res.data.tree, win.app_name);
-      this.ui.trace?.({ kind: "guide-step", step: i + 1, of: steps.length, match: match?.node ? "one" : match ? "several" : "none" });
+      this.ui.trace?.({
+        kind: "guide-step",
+        step: i + 1,
+        of: steps.length,
+        match: match?.node ? (match.near ? "near" : "one") : match ? "several" : "none",
+        target: String(step.target).slice(0, 60),
+        ...(match?.node?.name && match.near ? { chose: String(match.node.name).slice(0, 60) } : {}),
+        ...(!match ? { nearest: nearestNames(res.data.tree, step.target) } : {}),
+      });
       if (!match?.node) {
         const why = match
           ? `several controls are called "${step.target}" (${match.candidates.map((c) => c.ref_id).join(", ")})`

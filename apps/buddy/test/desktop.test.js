@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { controlShape, controlValues, findControl, furthestStep, valuesChanged, renderReading, renderTree, SHAPE_CHANGE, shapeDistance } from "../src/desktop.js";
+import { controlShape, controlValues, findControl, furthestStep, nearestNames, valuesChanged, renderReading, renderTree, SHAPE_CHANGE, shapeDistance } from "../src/desktop.js";
 
 const at = (x, y, width = 100, height = 20) => ({ x, y, width, height });
 
@@ -111,4 +111,20 @@ test("valuesChanged sees a new selection or typed text, and not controls coming 
   assert.equal(valuesChanged(before, controlValues(sheet("A1"))), false);
   assert.equal(valuesChanged(before, controlValues(sheet("E2"))), true, "clicking E2 moves the Name Box");
   assert.equal(valuesChanged(before, controlValues({ role: "window", children: [] })), false, "a control that went away is the shape's business");
+});
+
+test("findControl matches near misses by meaning, and doesn't guess between equals or stretch too far", () => {
+  let n = 0;
+  const ui = (...names) => ({ role: "window", children: names.map((name) => ({ role: "button", name, ref_id: `@s1:e${++n}`, bounds: { x: n * 10, y: 0, width: 9, height: 9 } })) });
+  const excel = ui("Sort A to Z", "Sort Z to A", "Filter", "Clear");
+  assert.equal(findControl(excel, "Sort Largest to Smallest")?.node?.name, "Sort Z to A");
+  assert.equal(findControl(excel, "Sort Largest to Smallest")?.near, true, "marked as a near match in the log");
+  assert.equal(findControl(excel, "Sort ascending")?.node?.name, "Sort A to Z");
+  assert.equal(findControl(ui("File", "Options", "Help"), "Settings")?.node?.name, "Options");
+  assert.equal(findControl(ui("Delete sheet", "Insert sheet"), "Remove sheet")?.node?.name, "Delete sheet");
+  assert.equal(findControl(ui("Delete row", "Delete column"), "Remove")?.candidates?.length, 2, "equally close: Buddy asks the model rather than guess");
+  assert.equal(findControl(ui("View", "Zoom", "Status bar"), "Word wrap"), null, "nothing close: no stretch");
+  assert.equal(findControl(ui("Export", "Save As"), "Export to PDF"), null, "half a match isn't enough");
+  assert.equal(findControl(ui("Sort", "Sort by colour"), "sorts")?.node?.name, "Sort", "the shorter label wins when both cover it");
+  assert.deepEqual(nearestNames(ui("Word count", "Wrap text", "Zoom"), "Word wrap"), ["Word count", "Wrap text"]);
 });
