@@ -1,7 +1,7 @@
-// Which AI provider Buddy thinks with. Anthropic is called through its own SDK (brain.js); every other provider here
-// speaks OpenAI's Chat Completions API, so one adapter serves them all. Buddy's conversation stays in Anthropic's
-// message format (text, image, tool_use and tool_result blocks); chatRequest() converts it on the way out and
-// fromChat() converts the reply back, so history, trimming and tools work the same whichever provider answers.
+// Which AI provider Buddy thinks with. Anthropic is called through its own SDK (brain.js), OpenAI through its
+// Responses API, and the rest through Chat Completions, which they all speak. Buddy's conversation stays in
+// Anthropic's message format (text, image, tool_use and tool_result blocks); it is converted on the way out and the
+// reply converted back, so history, trimming and tools work the same whichever provider answers.
 
 /**
  * @typedef {"anthropic" | "openai" | "openrouter" | "gemini" | "deepseek"} ProviderId
@@ -215,30 +215,114 @@ export function foldChunks(/** @type {any[]} */ chunks) {
   return { message, finish, usage };
 }
 
+// ---------- Anthropic format <-> OpenAI Responses ----------
+// OpenAI itself is called through its Responses API: its newest models reason and use tools together only there.
+// Reasoning comes back encrypted (store: false, so OpenAI keeps nothing) and stays in Buddy's history as an
+// "openai_reasoning" block, handed back next turn so the model keeps its train of thought between tool calls.
+
+/** Buddy's conversation as Responses input items. @param {any[]} messages */
+export function toResponsesInput(messages) {
+  const out = [];
+  for (const m of messages) {
+    const blocks = typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content;
+    if (m.role === "assistant") {
+      for (const b of blocks) {
+        if (b.type === "openai_reasoning") out.push(b.item);
+        else if (b.type === "text" && b.text) out.push({ role: "assistant", content: b.text });
+        else if (b.type === "tool_use") out.push({ type: "function_call", call_id: b.id, name: b.name, arguments: JSON.stringify(b.input ?? {}) });
+      }
+      continue;
+    }
+    const images = [];
+    for (const b of blocks.filter((x) => x.type === "tool_result")) {
+      const said = textOf(b.content);
+      const seen = imagesOf(b.content);
+      images.push(...seen);
+      out.push({ type: "function_call_output", call_id: b.tool_use_id, output: said || (seen.length ? "(screenshot below)" : "Done.") });
+    }
+    const parts = [];
+    for (const b of blocks) {
+      if (b.type === "text" && b.text) parts.push({ type: "input_text", text: b.text });
+      else if (b.type === "image" && b.source?.type === "base64") images.push(b);
+    }
+    for (const b of images) parts.push({ type: "input_image", image_url: dataUrl(b) });
+    if (parts.length) out.push({ role: "user", content: parts });
+  }
+  return out;
+}
+
+/** @param {{ model: string, effort: string, system: string, tools: any[], messages: any[], maxTokens: number, drop?: Set<string> }} o */
+export function responsesRequest({ model, effort, system, tools, messages, maxTokens, drop = new Set() }) {
+  /** @type {Record<string, unknown>} */
+  const body = {
+    model,
+    instructions: system,
+    input: toResponsesInput(messages),
+    tools: tools.map((t) => ({ type: "function", name: t.name, description: t.description, parameters: t.input_schema })),
+    store: false,
+    stream: true,
+  };
+  if (!drop.has("max_output_tokens")) body.max_output_tokens = maxTokens;
+  if (!drop.has("reasoning")) {
+    body.reasoning = { effort };
+    body.include = ["reasoning.encrypted_content"];
+  }
+  return body;
+}
+
+/** A finished Responses reply as the Anthropic-shaped reply brain.js works with. @param {any} response */
+export function fromResponses(response) {
+  const content = [];
+  let refusal = false;
+  for (const item of response.output ?? []) {
+    if (item.type === "reasoning") content.push({ type: "openai_reasoning", item });
+    else if (item.type === "function_call") {
+      let input = {};
+      try {
+        input = item.arguments ? JSON.parse(item.arguments) : {};
+      } catch {}
+      content.push({ type: "tool_use", id: item.call_id, name: item.name, input });
+    } else if (item.type === "message") {
+      for (const part of item.content ?? []) {
+        if (part.type === "output_text" && part.text) content.push({ type: "text", text: part.text });
+        if (part.type === "refusal") refusal = true;
+      }
+    }
+  }
+  const stop = content.some((b) => b.type === "tool_use") ? "tool_use"
+    : refusal ? "refusal"
+    : response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens" ? "max_tokens"
+    : "end_turn";
+  const u = response.usage ?? {};
+  return { content, stop_reason: stop, usage: { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cache_read_input_tokens: u.input_tokens_details?.cached_tokens } };
+}
+
 // ---------- One turn ----------
 
 // Optional fields a provider or model may refuse ("Unsupported parameter: reasoning_effort"); a refused one is
 // left out from then on for that model.
-const OPTIONAL = ["reasoning_effort", "max_completion_tokens", "max_tokens", "stream_options"];
+const OPTIONAL = ["reasoning_effort", "reasoning", "max_completion_tokens", "max_output_tokens", "max_tokens", "stream_options"];
 /** @type {Map<string, Set<string>>} */
 const refused = new Map();
 
 /**
- * One model turn on a Chat Completions provider, streamed. Resolves the Anthropic-shaped reply.
+ * One model turn on a provider other than Anthropic, streamed: OpenAI through Responses, the rest through Chat
+ * Completions. Resolves the Anthropic-shaped reply.
  * @param {{ provider: ProviderId, key: string, model: string, effort: string, system: string, tools: any[], messages: any[], maxTokens: number, signal?: AbortSignal, fetchImpl?: typeof fetch }} o
  */
 export async function chatTurn({ provider, key, model, signal, fetchImpl = fetch, ...rest }) {
+  const responses = provider === "openai";
   const memo = `${provider}|${model}`;
   const drop = refused.get(memo) ?? new Set();
   for (let attempt = 0; attempt <= OPTIONAL.length; attempt++) {
-    const body = chatRequest({ provider, model, drop, ...rest });
-    const res = await fetchImpl(`${PROVIDERS[provider].baseURL}/chat/completions`, {
+    const body = responses ? responsesRequest({ model, drop, ...rest }) : chatRequest({ provider, model, drop, ...rest });
+    const res = await fetchImpl(`${PROVIDERS[provider].baseURL}${responses ? "/responses" : "/chat/completions"}`, {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
       body: JSON.stringify(body),
       signal,
     });
-    if (res.ok) return readStream(res);
+    if (res.ok) return responses ? readResponses(res) : readStream(res);
     const err = await providerError(res);
     const field = err.kind === "invalid_request" ? OPTIONAL.find((f) => f in body && err.message.includes(f)) : undefined;
     if (!field) throw err;
@@ -248,8 +332,8 @@ export async function chatTurn({ provider, key, model, signal, fetchImpl = fetch
   throw new ProviderError("invalid_request", 400, "The provider refused every form of the request.");
 }
 
-async function readStream(/** @type {Response} */ res) {
-  const chunks = [];
+/** Server-sent events, one parsed JSON object per data line. */
+async function* events(/** @type {Response} */ res) {
   const decoder = new TextDecoder();
   let buf = "";
   // @ts-ignore - Response.body is async-iterable in Node
@@ -260,11 +344,32 @@ async function readStream(/** @type {Response} */ res) {
       buf = buf.slice(nl + 1);
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
-      if (data === "[DONE]") continue;
-      const chunk = JSON.parse(data);
-      if (chunk.error) throw new ProviderError("server_error", 500, String(chunk.error.message ?? chunk.error));
-      chunks.push(chunk);
+      if (data && data !== "[DONE]") yield JSON.parse(data);
     }
+  }
+}
+
+function failed(/** @type {any} */ error) {
+  const message = String(error?.message ?? "The model call failed.");
+  const code = `${error?.code ?? ""} ${message}`;
+  const kind = /insufficient_quota|quota|credit|billing/i.test(code) ? "billing_error" : /rate_limit/i.test(code) ? "rate_limit" : "server_error";
+  return new ProviderError(kind, 500, message);
+}
+
+async function readResponses(/** @type {Response} */ res) {
+  for await (const e of events(res)) {
+    if (e.type === "response.completed" || e.type === "response.incomplete") return fromResponses(e.response);
+    if (e.type === "response.failed") throw failed(e.response?.error);
+    if (e.type === "error") throw failed(e.error ?? e);
+  }
+  throw new ProviderError("server_error", 500, "The reply stopped before it finished.");
+}
+
+async function readStream(/** @type {Response} */ res) {
+  const chunks = [];
+  for await (const chunk of events(res)) {
+    if (chunk.error) throw failed(chunk.error);
+    chunks.push(chunk);
   }
   const { message, finish, usage } = foldChunks(chunks);
   return fromChat(message, finish, usage);

@@ -110,15 +110,16 @@ test("Buddy answers through an OpenAI-style provider, and says its failures in t
   setBrainDefaults({ model: "claude-opus-5-5", effort: "low", providerModels: { openai: "gpt-test" } });
   const realFetch = globalThis.fetch;
   const sent = [];
-  let reply = { status: 200, body: `data: ${JSON.stringify({ choices: [{ delta: { content: "Click Data, then Sort." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n` };
+  const done = { type: "response.completed", response: { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Click Data, then Sort." }] }] } };
+  let reply = { status: 200, body: `data: ${JSON.stringify(done)}\n\n` };
   globalThis.fetch = async (url, init) => (sent.push({ url: String(url), body: JSON.parse(init.body), auth: init.headers.authorization }), new Response(reply.body, { status: reply.status }));
   try {
     const b = new Brain({ apiKey: "sk-proj-test", provider: "openai", point: async () => {}, confirm: async () => "deny", status: () => {} });
     assert.equal(await b.run(null, "How do I sort?"), "Click Data, then Sort.");
-    assert.equal(sent[0].url, "https://api.openai.com/v1/chat/completions");
+    assert.equal(sent[0].url, "https://api.openai.com/v1/responses");
     assert.equal(sent[0].body.model, "gpt-test");
     assert.equal(sent[0].auth, "Bearer sk-proj-test");
-    assert.ok(sent[0].body.tools.some((t) => t.function.name === "point_at"), "Buddy's tools go along");
+    assert.ok(sent[0].body.tools.some((t) => t.name === "point_at"), "Buddy's tools go along");
     reply = { status: 429, body: JSON.stringify({ error: { message: "You exceeded your current quota", code: "insufficient_quota" } }) };
     const said = await b.run(null, "And filter?");
     assert.match(said, /OpenAI account is out of credit/);

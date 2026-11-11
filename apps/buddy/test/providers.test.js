@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ProviderError, chatModels, chatTurn, foldChunks, fromChat, keyFits, listModels, providerForKey, toChatMessages, toChatTools } from "../src/providers.js";
+import { ProviderError, chatModels, chatTurn, foldChunks, fromChat, fromResponses, keyFits, listModels, providerForKey, toChatMessages, toChatTools, toResponsesInput } from "../src/providers.js";
 
 const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
 
@@ -77,11 +77,11 @@ test("a setting the model refuses is dropped and the turn retried", async () => 
     if ("reasoning_effort" in body) return new Response(JSON.stringify({ error: { message: "Unsupported parameter: 'reasoning_effort' is not supported with this model." } }), { status: 400 });
     return sse({ choices: [{ delta: { content: "Hello" }, finish_reason: "stop" }] });
   };
-  const turn = { provider: /** @type {const} */ ("openai"), key: "k", model: "gpt-4o-test", effort: "low", system: "s", tools: [], messages: [{ role: "user", content: "hi" }], maxTokens: 100, fetchImpl };
+  const turn = { provider: /** @type {const} */ ("deepseek"), key: "k", model: "deepseek-test", effort: "low", system: "s", tools: [], messages: [{ role: "user", content: "hi" }], maxTokens: 100, fetchImpl };
   const reply = await chatTurn(turn);
   assert.deepEqual(reply.content, [{ type: "text", text: "Hello" }]);
   assert.equal(bodies.length, 2);
-  assert.equal(bodies[0].max_completion_tokens, 100, "OpenAI gets max_completion_tokens");
+  assert.equal(bodies[0].max_tokens, 100);
   await chatTurn(turn);
   assert.equal(bodies.length, 3, "remembered for that model: no second refusal");
 });
@@ -89,7 +89,7 @@ test("a setting the model refuses is dropped and the turn retried", async () => 
 test("provider failures are sorted into kinds Buddy can explain", async () => {
   const fail = (status, error) => async () => new Response(JSON.stringify({ error }), { status });
   const kind = (status, error) =>
-    chatTurn({ provider: "openai", key: "k", model: "m", effort: "low", system: "", tools: [], messages: [], maxTokens: 1, fetchImpl: fail(status, error) }).then(
+    chatTurn({ provider: "openrouter", key: "k", model: "m", effort: "low", system: "", tools: [], messages: [], maxTokens: 1, fetchImpl: fail(status, error) }).then(
       () => null,
       (e) => (assert.ok(e instanceof ProviderError), e.kind),
     );
@@ -99,4 +99,70 @@ test("provider failures are sorted into kinds Buddy can explain", async () => {
   assert.equal(await kind(404, { message: "The model `m` does not exist" }), "model_not_found");
   assert.equal(await kind(500, { message: "oops" }), "server_error");
   await assert.rejects(listModels("openai", "bad", fail(401, { message: "Incorrect API key" })), (e) => e.kind === "authentication_failed");
+});
+
+const events = (...list) => new Response(list.map((e) => `event: ${e.type}
+data: ${JSON.stringify(e)}
+
+`).join(""), { status: 200 });
+
+test("OpenAI is called through Responses, where its models reason and use tools together", async () => {
+  const sent = [];
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "gAAA" };
+  const fetchImpl = async (url, init) => {
+    sent.push({ url: String(url), body: JSON.parse(init.body) });
+    return events(
+      { type: "response.output_text.delta", delta: "Opening" },
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output: [reasoning, { type: "message", content: [{ type: "output_text", text: "Opening the Data tab." }] }, { type: "function_call", call_id: "call_9", name: "point_at", arguments: '{"ref":"@s1:e4"}' }],
+          usage: { input_tokens: 1200, output_tokens: 40, input_tokens_details: { cached_tokens: 1000 } },
+        },
+      },
+    );
+  };
+  const reply = await chatTurn({ provider: "openai", key: "k", model: "gpt-6.1-sol", effort: "medium", system: "be Buddy", tools: [{ name: "point_at", description: "Point", input_schema: { type: "object" } }], messages: [{ role: "user", content: "Sort it" }], maxTokens: 500, fetchImpl });
+  assert.equal(sent[0].url, "https://api.openai.com/v1/responses");
+  const body = sent[0].body;
+  assert.deepEqual(body.reasoning, { effort: "medium" });
+  assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
+  assert.equal(body.store, false, "OpenAI keeps nothing");
+  assert.equal(body.instructions, "be Buddy");
+  assert.deepEqual(body.tools, [{ type: "function", name: "point_at", description: "Point", parameters: { type: "object" } }]);
+  assert.deepEqual(reply.content, [
+    { type: "openai_reasoning", item: reasoning },
+    { type: "text", text: "Opening the Data tab." },
+    { type: "tool_use", id: "call_9", name: "point_at", input: { ref: "@s1:e4" } },
+  ]);
+  assert.equal(reply.stop_reason, "tool_use");
+  assert.deepEqual(reply.usage, { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 1000 });
+});
+
+test("the next Responses turn hands back the reasoning, the calls and their results, screenshots after", () => {
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "gAAA" };
+  const input = toResponsesInput([
+    { role: "user", content: [png, { type: "text", text: "Sort it" }] },
+    { role: "assistant", content: [{ type: "openai_reasoning", item: reasoning }, { type: "text", text: "Looking." }, { type: "tool_use", id: "c1", name: "screenshot", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: [png] }] },
+  ]);
+  assert.deepEqual(input, [
+    { role: "user", content: [{ type: "input_text", text: "Sort it" }, { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" }] },
+    reasoning,
+    { role: "assistant", content: "Looking." },
+    { type: "function_call", call_id: "c1", name: "screenshot", arguments: "{}" },
+    { type: "function_call_output", call_id: "c1", output: "(screenshot below)" },
+    { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" }] },
+  ]);
+  assert.equal(fromResponses({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [] }).stop_reason, "max_tokens");
+  assert.equal(fromResponses({ status: "completed", output: [{ type: "message", content: [{ type: "refusal", refusal: "no" }] }] }).stop_reason, "refusal");
+});
+
+test("a Responses reply that fails mid-stream is reported, out of credit included", async () => {
+  const fetchImpl = async () => events({ type: "response.failed", response: { error: { code: "insufficient_quota", message: "You exceeded your current quota." } } });
+  await assert.rejects(
+    chatTurn({ provider: "openai", key: "k", model: "m", effort: "low", system: "", tools: [], messages: [], maxTokens: 1, fetchImpl }),
+    (e) => e instanceof ProviderError && e.kind === "billing_error",
+  );
 });

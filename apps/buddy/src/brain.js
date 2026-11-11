@@ -484,6 +484,8 @@ const messageSize = (m) => (typeof m.content === "string" ? m.content.length : m
 const isTurnStart = (m) => m.role === "user" && !(Array.isArray(m.content) && m.content.some((b) => b.type === "tool_result"));
 
 function trimBlock(b) {
+  // OpenAI's reasoning only matters to the turn it was made in.
+  if (b.type === "openai_reasoning") return { type: "text", text: "" };
   if (b.type === "image") return { type: "text", text: "[an earlier image, removed to save room]" };
   if (b.type === "tool_result" && Array.isArray(b.content)) return { ...b, content: b.content.map(trimBlock) };
   if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 600) {
