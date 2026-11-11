@@ -72,12 +72,16 @@ export function sanitizeSvg(svg) {
   let out = s;
   for (let pass = 0; pass < 10; pass++) {
     const next = sanitizeOnce(out);
-    if (next === out) return out;
+    // Settled: and, checked on its own, nothing that runs, loads or navigates is left; else nothing is shown.
+    if (next === out) return LEFT_OVER.test(out) ? "" : out;
     out = next;
   }
   // Still changing after ten passes: nothing a plate needs looks like that.
   return "";
 }
+
+// What must never survive cleaning, tested independently of how the removals are written.
+const LEFT_OVER = /<\/?\s*(script|style|foreignObject|iframe|object|embed|a|image|link|meta)\b|\son\w+\s*=|\s(xlink:)?href\s*=\s*("|')(?!#)/i;
 
 /** @param {string} s */
 function sanitizeOnce(s) {

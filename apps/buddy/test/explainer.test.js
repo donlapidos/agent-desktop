@@ -71,3 +71,16 @@ test("pieces left by one removal can't join into a script, a handler or a link",
   assert.doesNotMatch(link, /href\s*=/i);
   assert.match(link, /<rect/);
 });
+
+test("cleaning leaves motion and links inside the drawing alone", async () => {
+  const { sanitizeSvg } = await import("../src/explainer.js");
+  const svg = '<svg viewBox="0 0 10 10"><defs><path id="p" d="M0 0 L5 5"/></defs><circle r="2"><animate attributeName="cx" from="0" to="8" dur="2s" repeatCount="indefinite"/></circle><use href="#p"/><animateMotion dur="3s"><mpath href="#p"/></animateMotion></svg>';
+  assert.equal(sanitizeSvg(svg), svg, "animate, animateMotion and #links are part of the drawing");
+});
+
+test("whatever the removals miss, a final check refuses the whole drawing", async () => {
+  const { sanitizeSvg } = await import("../src/explainer.js");
+  // The removals look for "<script"; this spacing slips past them, so only the final check stops it.
+  assert.equal(sanitizeSvg("<svg>< script>alert(1)</svg>"), "");
+  assert.equal(sanitizeSvg('<svg><circle r="2"/></svg>'), '<svg><circle r="2"/></svg>');
+});
