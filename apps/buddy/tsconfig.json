@@ -39,6 +39,7 @@
     "src/activity.js",
     "src/approval-queue.js",
     "src/island-state.js",
-    "src/app-sessions.js"
+    "src/app-sessions.js",
+    "src/keys.js"
   ]
 }

@@ -95,6 +95,17 @@ const refusals = [];
 
 // ---------- The checks ----------
 
+// A key saved for "Other server" at one address is sent there, not to another, and is there again on the way back.
+function keyProblems(k) {
+  if (!k) return ["the key check printed nothing"];
+  return [
+    (!k.atA.key.saved || k.atA.sent !== "key-for-server-a-0123456789") && "the key wasn't used at its own address",
+    k.atB.sent !== null && "the key was sent to another address",
+    k.atB.key.elsewhere !== "https://a.example" && `Settings didn't say where the key belongs (${k.atB.key.elsewhere})`,
+    k.backAtA.sent !== "key-for-server-a-0123456789" && "the key didn't come back at its own address",
+  ].filter(Boolean);
+}
+
 /** @type {Record<string, { interactive?: boolean, run: () => Promise<string[]> }>} each resolves its problems */
 const CHECKS = {
   async files() {
@@ -154,6 +165,7 @@ const CHECKS = {
       lang.lang && lang.lang !== "es" && `Spanish heard as ${lang.lang}`,
       !lang.text && "nothing heard in the language check (are the voice models downloaded?)",
       !fs.existsSync(path.join(out, "settings-claude.png")) && "no Settings screenshots",
+      ...keyProblems(markers.SETTINGS_KEYS?.[0]),
     ].filter(Boolean);
   },
 

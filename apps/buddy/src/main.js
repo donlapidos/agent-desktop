@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
 import { APPS, APP_IDS, allowRules, appStatus, claudeCodeExe, launchSpec, quickChatArgs, quickChatConfig, setApp, setCodeAllowed, staleApps } from "./ai-apps.js";
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
+import { keyFor, keyRecord, originOf } from "./keys.js";
 import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, noteTested, providerForKey, testedOf, useCapsStore, verdict } from "./providers.js";
 import { CASES, runEvals } from "./evals.js";
 import { createActivity } from "./activity.js";
@@ -157,18 +158,33 @@ const keyFile = (/** @type {ProviderId} */ provider = currentProvider()) => path
 const currentProvider = () => /** @type {ProviderId} */ (settings?.provider ?? "anthropic");
 const envKey = (/** @type {ProviderId} */ provider = currentProvider()) => process.env[PROVIDERS[provider].keyEnv ?? ""] || null;
 
-function loadApiKey(/** @type {ProviderId} */ provider = currentProvider()) {
-  if (envKey(provider)) return envKey(provider);
+// A key for a server at an address the user chose ("Other server") is kept with that address, and only ever sent
+// there: change the address to another host and the saved key stays home until a key is entered for the new one.
+// (keys.js: keyRecord, keyFor.) Keys of providers at fixed addresses are kept as they are.
+const boundToAddress = (/** @type {ProviderId} */ provider) => ADDRESS_PROVIDERS.includes(provider);
+
+/** The saved key as stored: the key, and the address it was entered for (null for fixed-address providers). */
+function savedKey(/** @type {ProviderId} */ provider) {
   try {
-    return safeStorage.decryptString(fs.readFileSync(keyFile(provider)));
+    return keyRecord(safeStorage.decryptString(fs.readFileSync(keyFile(provider))));
   } catch {
     return null;
   }
 }
 
+function loadApiKey(/** @type {ProviderId} */ provider = currentProvider()) {
+  if (envKey(provider)) return envKey(provider);
+  const saved = savedKey(provider);
+  if (!saved || !boundToAddress(provider)) return saved?.key ?? null;
+  // Saved before keys knew their address: it's tied to where it's used now, once.
+  if (!saved.origin) saveApiKey(saved.key, provider);
+  return keyFor(saved, providerURL(provider));
+}
+
 function saveApiKey(/** @type {string} */ key, /** @type {ProviderId} */ provider) {
   fs.mkdirSync(path.dirname(keyFile(provider)), { recursive: true });
-  fs.writeFileSync(keyFile(provider), safeStorage.encryptString(key));
+  const stored = boundToAddress(provider) ? JSON.stringify({ key, origin: originOf(providerURL(provider)) }) : key;
+  fs.writeFileSync(keyFile(provider), safeStorage.encryptString(stored));
 }
 
 // The chat models each provider offers for the saved key (providers.js listModels), fetched when a key is saved or
@@ -1688,7 +1704,13 @@ function settingsState() {
       appearance: !!process.env.BUDDY_THEME,
     },
     taken: takenHotkeys(),
-    key: { saved: fs.existsSync(keyFile()), fromEnv: !!envKey(), env: PROVIDERS[currentProvider()].keyEnv },
+    key: (() => {
+      const saved = savedKey(currentProvider());
+      const usable = !!loadApiKey();
+      // A key saved for another address: Settings asks for one for this address instead.
+      const elsewhere = !!saved && !usable && boundToAddress(currentProvider()) ? saved.origin : null;
+      return { saved: !!saved && !elsewhere, elsewhere, fromEnv: !!envKey(), env: PROVIDERS[currentProvider()].keyEnv };
+    })(),
     providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, note: p.note, key: p.key, local: !!p.local, keyFrom: p.keyFrom, placeholder: p.placeholder, saved: !!envKey(p.id) || fs.existsSync(keyFile(p.id)), address: providerURL(p.id), defaultAddress: PROVIDERS[p.id].baseURL ?? null, ready: providerReady(p.id) })),
     providerModels: modelListState(),
     modelCheck: modelCheck && { model: modelCheck.model, provider: modelCheck.provider, running: modelCheck.running, stopped: !!modelCheck.stopped, done: modelCheck.done, total: modelCheck.total, passed: modelCheck.passed, missed: modelCheck.missed },
@@ -2111,6 +2133,16 @@ app.whenReady().then(() => {
       const pcm = Float32Array.from({ length: Math.floor(clip.audio.length / ratio) }, (_, i) => clip.audio[Math.floor(i * ratio)]);
       const t0 = Date.now();
       console.log("SETTINGS_LANGUAGE", JSON.stringify({ ...(await voice.transcribe(pcm)), ms: Date.now() - t0 }));
+      // A key for "Other server" goes only to the address it was saved for.
+      changeSettings({ provider: "custom", providerURLs: { custom: "https://a.example/v1" } });
+      saveApiKey("key-for-server-a-0123456789", "custom");
+      const atA = { key: settingsState().key, sent: loadApiKey() };
+      changeSettings({ providerURLs: { custom: "https://b.example/v1" } });
+      const atB = { key: settingsState().key, sent: loadApiKey() };
+      changeSettings({ providerURLs: { custom: "https://a.example/v1" } });
+      const backAtA = { key: settingsState().key, sent: loadApiKey() };
+      console.log("SETTINGS_KEYS", JSON.stringify({ atA, atB, backAtA }));
+      changeSettings({ provider: "anthropic" });
       for (const page of ["dictation", "agents", "routines"]) await shoot(page, `settings-${page}`);
       await updates.check();
       await wait(4000);

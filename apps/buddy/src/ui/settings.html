@@ -687,7 +687,9 @@
         row.append(cancel);
       }
       box.append(
-        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : provider().key === "optional" ? "No key saved. Add one only if the server asks for it." : `No ${provider().label} key yet. Buddy's own chat needs one; Use with your AI app, below, doesn't.`),
+        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key."
+          : S.key.elsewhere ? `The saved key is for ${S.key.elsewhere}, so Buddy won't send it to this address. Enter this server's key, if it needs one.`
+          : provider().key === "optional" ? "No key saved. Add one only if the server asks for it." : `No ${provider().label} key yet. Buddy's own chat needs one; Use with your AI app, below, doesn't.`),
         row,
         el("p", { className: "note", textContent: `Get one at ${provider().keyFrom}. It's stored encrypted with Windows and never shown again.` }),
       );
