@@ -188,3 +188,52 @@ test("reading pages: Allow for this task covers that site, not the next one", as
   await runPcTool("fetch_page", { url: "https://elsewhere.example/?data=secret" }, c);
   assert.deepEqual(cards, ["Read a page on news.example", "Read a page on elsewhere.example"], "another site asks");
 });
+
+test("PowerShell that names a private place, in any usual spelling, is refused; everyday commands aren't", async () => {
+  const { powershellProblem } = await import("../src/pc-tools.js");
+  const { places, home } = pc();
+  const refused = [
+    "Get-Content ~/.ssh/id_ed25519",
+    String.raw`Get-Content $env:USERPROFILE\.ssh\id_ed25519`,
+    String.raw`type %USERPROFILE%\.aws\credentials`,
+    String.raw`Get-ChildItem $HOME\.claude`,
+    String.raw`Get-Content (Join-Path $env:APPDATA 'desktop-buddy\api-key.bin')`,
+    String.raw`Copy-Item "$env:APPDATA\desktop-buddy\api-key.bin" .`,
+    String.raw`Get-Content '${places.buddyData}\settings.json'`,
+    String.raw`Get-ChildItem "$env:LOCALAPPDATA\Google\Chrome\User Data\Default"`,
+    String.raw`dir $env:APPDATA\Microsoft\Credentials`,
+    "Get-Content $env:APPDATA/Claude/claude_desktop_config.json",
+    "[Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, 'CurrentUser')",
+    "cmdkey /list",
+    String.raw`vaultcmd /listcreds:"Windows Credentials"`,
+    String.raw`Get-Content ${home}\.codex\auth.json`,
+  ];
+  for (const c of refused) assert.ok(powershellProblem(c, places), `not refused: ${c}`);
+  const fine = [
+    "Get-ChildItem *.jpg | Sort-Object LastWriteTime | Rename-Item -NewName { 'Photo ' + $_.LastWriteTime.ToString('yyyy-MM-dd') + $_.Extension }",
+    "Compress-Archive -Path Photos -DestinationPath photos.zip",
+    "Get-Content notes.txt | Measure-Object -Word",
+    String.raw`Get-Content C:\Windows\System32\drivers\etc\hosts`,
+    "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('old.txt', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+    String.raw`Get-ChildItem $env:USERPROFILE\Documents -Filter *.docx`,
+    "Write-Output 'my.sshot.png is a screenshot'",
+    "Get-Process | Sort-Object CPU -Descending | Select-Object -First 5",
+  ];
+  for (const c of fine) assert.equal(powershellProblem(c, places), null, c);
+});
+
+test("a refused command isn't even asked about, and secret keys in what comes back are hidden", async () => {
+  const { hideSecrets } = await import("../src/pc-tools.js");
+  const { places, asked, ctx } = pc();
+  assert.match(await runPcTool("run_powershell", { command: "Get-Content ~/.ssh/id_ed25519", description: "Show my notes" }, ctx()), /^Not allowed: .*private place/);
+  assert.equal(asked.length, 0, "no card for a refused command");
+  const out = await runPcTool("run_powershell", { command: "'key=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV'; 'gh=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'", description: "Print" }, ctx());
+  assert.doesNotMatch(out, /sk-ant-api03|ghp_/);
+  assert.match(out, /2 secret keys hidden/);
+  fs.writeFileSync(path.join(places.workDir, ".env"), "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345\nNAME=Sam\n");
+  const read = await runPcTool("read_file", { path: ".env" }, ctx());
+  assert.match(read, /NAME=Sam/);
+  assert.doesNotMatch(read, /sk-proj-abc/);
+  assert.equal(hideSecrets("-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----").hidden, 1);
+  assert.equal(hideSecrets("sk-short and AIza-not-long").hidden, 0, "things that merely start like keys stay");
+});

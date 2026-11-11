@@ -3,13 +3,15 @@
 // if the user wants, building things.
 //
 // Safety, in one place:
-// - Places: some are never touched, whatever the model asks or the user approves (Windows, Program Files, other
-//   users, saved passwords and keys, browser profiles, the AI apps' own settings, Buddy's own data with its API keys).
+// - Places: the file tools never touch some, whatever the model asks or the user approves (Windows, Program Files,
+//   other users, saved passwords and keys, browser profiles, the AI apps' own settings, Buddy's own data with its API
+//   keys).
 //   The user's everyday folders are read without asking; anywhere else asks first.
 // - Changes: writing, editing, running PowerShell and opening a web page all ask on Buddy's card, in plain words
 //   ("Allow for this task" covers the rest of the answer). A file that is replaced or edited is copied to Buddy's undo
 //   folder first and kept for a week.
-// - PowerShell runs without the user's API keys in its environment, in the working folder, and stops on cancel.
+// - PowerShell runs without the user's API keys in its environment, in the working folder, and stops on cancel. It
+//   can't be walled off from private places the way the file tools are; see "PowerShell and private places".
 // - Web pages: only public http(s) addresses, never this PC or the local network (redirects included); their text is
 //   marked as information, not instructions.
 import { spawn } from "node:child_process";
@@ -74,6 +76,8 @@ export const BEYOND_SCREEN = `Beyond the screen:
   just say what you made.
 - The user is not a developer. Never show commands, code or file paths unless they ask; say what you did in plain
   words. Every run_powershell needs a short plain description of what it does for them, like "Rename 3 photos".
+- Never go into passwords, keys, browser data or Buddy's own files, with any tool; PowerShell commands that do are
+  refused, and secret keys in what you read are hidden from you.
 - Never delete permanently: move things to the Recycle Bin instead
   ([Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(path, 'OnlyErrorDialogs', 'SendToRecycleBin'), after
   Add-Type -AssemblyName Microsoft.VisualBasic; DeleteDirectory for folders).
@@ -182,6 +186,73 @@ export function placeWords(/** @type {string} */ full, /** @type {Places} */ p) 
   const shortDir = inside(dir, p.home) ? path.relative(p.home, dir) || "your home folder" : dir;
   return `${path.basename(full)} in ${shortDir}`;
 }
+
+// ---------- PowerShell and private places ----------
+// PowerShell runs as the user, so Windows lets it read anything they can; Buddy can't wall it off the way judgePath
+// walls off the file tools (that would take an app container). Two checks narrow it instead. A command that names a
+// private place (keys and .ssh, saved Windows credentials, browser profiles, the AI apps' settings, Buddy's own data),
+// in any of the usual spellings ($env:APPDATA\desktop-buddy, %USERPROFILE%\.ssh, ~/.aws), or reaches for Windows'
+// own secret stores (DPAPI's Unprotect, cmdkey, vaultcmd), is refused before it is asked about. And anything that
+// looks like a secret key in what PowerShell or read_file returns is hidden before the model sees it. Neither is a
+// wall: a determined command can still build a path piece by piece. They stop the obvious routes and the accidents.
+
+// Private places, as they appear in a command once spelled out: fragments of a path, matched between separators.
+const PRIVATE_FRAGMENTS = [
+  ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker",
+  ".claude", ".claude.json", ".codex", ".gemini", ".cursor", ".codeium", ".lmstudio",
+  "desktop-buddy",
+  "microsoft\\credentials", "microsoft\\protect", "microsoft\\vault",
+  "chrome\\user data", "edge\\user data", "firefox\\profiles", "bravesoftware",
+  "roaming\\claude", "code\\user",
+];
+const SECRET_STORES = /(^|[^a-z])(protecteddata|unprotect|cryptunprotectdata|cmdkey|vaultcmd|get-storedcredential|passwordvault|mimikatz|sekurlsa)([^a-z]|$)/;
+const EDGE = `(^|[\\\\\\s'"\`(=,;:]|$)`;
+
+/** Why PowerShell may not run `command`, or null. @param {string} command @param {Places} places */
+export function powershellProblem(command, places) {
+  const p = realPlaces(places);
+  const roaming = path.join(p.home, "AppData", "Roaming");
+  const local = path.join(p.home, "AppData", "Local");
+  let text = ` ${command} `.toLowerCase().replace(/\//g, "\\");
+  /** @type {[RegExp, string][]} */
+  const spelled = [
+    [/\$env:userprofile|\$\{env:userprofile\}|%userprofile%|\$home\b|\[environment\]::getfolderpath\(\s*['"]?userprofile['"]?\s*\)/g, p.home],
+    [/\$env:appdata|\$\{env:appdata\}|%appdata%|\[environment\]::getfolderpath\(\s*['"]?applicationdata['"]?\s*\)/g, roaming],
+    [/\$env:localappdata|\$\{env:localappdata\}|%localappdata%|\[environment\]::getfolderpath\(\s*['"]?localapplicationdata['"]?\s*\)/g, local],
+    [/(^|[\s'"(=,;])~(?=\\|$|[\s'"])/g, `$1${p.home}`],
+  ];
+  for (const [re, to] of spelled) text = text.replace(re, to.toLowerCase().replace(/\$/g, "$$$$"));
+  text = text.replace(/\\{2,}/g, "\\");
+  if (SECRET_STORES.test(text)) return "That command reaches for Windows' saved passwords or keys, which Buddy never does.";
+  for (const fragment of PRIVATE_FRAGMENTS) {
+    const escaped = fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`${EDGE}${escaped}${EDGE}`).test(text)) return `That command goes into a private place (${fragment.replace(/\\/g, " › ")}): passwords, keys, browser data or Buddy's own files, which Buddy never touches.`;
+  }
+  if (text.includes(p.buddyData.toLowerCase())) return "That command goes into Buddy's own files, which Buddy never touches.";
+  return null;
+}
+
+// What secret keys look like: API keys of the usual providers, GitHub and Slack tokens, AWS key ids, private keys.
+const SECRET_SHAPES = [
+  /sk-ant-[A-Za-z0-9_-]{16,}/g,
+  /sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16,}/g,
+  /sk-or-v1-[A-Za-z0-9]{16,}/g,
+  /\bsk-[A-Za-z0-9]{32,}\b/g,
+  /\bAIza[0-9A-Za-z_-]{30,}/g,
+  /\bgh[pousr]_[A-Za-z0-9]{30,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{30,}/g,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+];
+
+/** `text` with anything shaped like a secret key replaced, and how many were. @param {string} text */
+export function hideSecrets(text) {
+  let hidden = 0;
+  for (const re of SECRET_SHAPES) text = text.replace(re, () => (hidden++, "[secret key hidden]"));
+  return { text, hidden };
+}
+const hiddenNote = (/** @type {number} */ n) => (n ? `\n(${n} secret key${n === 1 ? "" : "s"} hidden: Buddy never passes keys to the model.)` : "");
 
 // ---------- Web pages ----------
 
@@ -345,7 +416,8 @@ export async function runPcTool(name, input, ctx) {
       if (cut) text = text.slice(0, MAX_READ_CHARS);
       const last = from - 1 + Math.min(count, all.length - from + 1);
       const more = cut || last < all.length ? `\n[lines ${from}-${last} of ${all.length}${cut ? ", cut short" : ""}; read on with offset]` : "";
-      return `${j.full}\n${text}${more}`;
+      const { text: clean, hidden } = hideSecrets(text);
+      return `${j.full}\n${clean}${more}${hiddenNote(hidden)}`;
     }
 
     case "write_file": {
@@ -390,15 +462,18 @@ export async function runPcTool(name, input, ctx) {
       const command = String(input.command ?? "").trim();
       if (!command) return "run_powershell needs a command.";
       const said = String(input.description ?? "").trim() || "Run a command on your PC";
+      const problem = powershellProblem(command, p);
+      if (problem) return `Not allowed: ${problem}`;
       if (!(await ctx.ask(said, command.length > 300 ? `${command.slice(0, 300)}…` : command, "powershell"))) return "The user declined.";
       ctx.status(said.endsWith("…") ? said : `${said}…`);
       fs.mkdirSync(p.workDir, { recursive: true });
       const timeoutMs = Math.min(300, Math.max(5, Number(input.timeout_seconds) || 60)) * 1000;
       const { code, out, ended } = await runPowerShell(command, { cwd: p.workDir, timeoutMs, signal: ctx.signal });
       ctx.record?.({ kind: "ran", summary: said });
-      const shown = out.length > 30_000 ? `${out.slice(0, 15_000)}\n…[${out.length - 30_000} characters left out]…\n${out.slice(-15_000)}` : out;
+      const { text: clean, hidden } = hideSecrets(out);
+      const shown = clean.length > 30_000 ? `${clean.slice(0, 15_000)}\n…[${clean.length - 30_000} characters left out]…\n${clean.slice(-15_000)}` : clean;
       const head = ended === "timeout" ? `Stopped after ${timeoutMs / 1000} s.` : ended === "cancelled" ? "Stopped: the user cancelled." : `Exit code ${code}.`;
-      return `${head}\n${shown.trim() || "(no output)"}`;
+      return `${head}\n${shown.trim() || "(no output)"}${hiddenNote(hidden)}`;
     }
 
     case "fetch_page": {
