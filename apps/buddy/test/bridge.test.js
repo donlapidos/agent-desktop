@@ -152,3 +152,26 @@ test("a pipe still held by a Buddy that just quit is taken over once it's free",
     bridge.close();
   }
 });
+
+test("each connection is its own session, and Buddy hears when one closes", async () => {
+  const dir = tempDir();
+  const seen = [];
+  const closed = [];
+  const bridge = startBridge({ dir, pipe: testPipe(), run: async (_n, _i, _s, client, conn) => (seen.push({ client, conn }), "ok"), onClosed: (conn) => closed.push(conn) });
+  const one = await claude(dir);
+  const two = await claude(dir);
+  try {
+    await one.callTool({ name: "look", arguments: {} });
+    await two.callTool({ name: "look", arguments: {} });
+    await one.callTool({ name: "list_windows", arguments: {} });
+    assert.equal(seen.length, 3);
+    assert.notEqual(seen[0].conn, seen[1].conn, "two connections, two sessions");
+    assert.equal(seen[0].conn, seen[2].conn, "the same connection stays one session");
+    await one.close();
+    for (let i = 0; i < 40 && !closed.length; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(closed, [seen[0].conn]);
+  } finally {
+    await two.close();
+    bridge.close();
+  }
+});

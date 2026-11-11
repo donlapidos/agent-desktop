@@ -62,17 +62,21 @@ const sameToken = (a, b) => typeof a === "string" && a.length === b.length && cr
  * Serves Buddy's tools on the pipe. `run(name, input, signal)` runs one tool and resolves its result (text, or
  * content blocks with images). `onClients(n)` hears how many Claude sessions are connected.
  * `pipe` is for tests; Buddy uses one per Windows user.
- * @param {{ dir: string, run: (name: string, input: object, signal: AbortSignal, client?: string) => Promise<unknown>, onClients?: (n: number) => void, trace?: (e: object) => void, pipe?: string }} opts
+ * `onClosed(conn)` hears that a session's connection closed.
+ * @param {{ dir: string, run: (name: string, input: object, signal: AbortSignal, client: string | undefined, conn: number) => Promise<unknown>, onClosed?: (conn: number) => void, onClients?: (n: number) => void, trace?: (e: object) => void, pipe?: string }} opts
  */
-export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
+export function startBridge({ dir, run, onClients, onClosed, trace, pipe = pipeName() }) {
   const token = crypto.randomBytes(24).toString("hex");
   const file = path.join(dir, BRIDGE_FILE);
   writeIfChanged(path.join(dir, TOOLS_FILE), JSON.stringify({ instructions: INSTRUCTIONS, tools: BRIDGE_TOOLS, safe: SAFE_TOOLS }));
   fs.writeFileSync(file, JSON.stringify({ pipe, token }), { mode: 0o600 });
   let clients = 0;
+  let connections = 0;
 
   const server = net.createServer((socket) => {
     let authed = false;
+    // Which session this is, for run(): each connection gets a Brain of its own (app-sessions.js).
+    const conn = ++connections;
     /** @type {string | undefined} which app this connection serves, as buddy-mcp was told (BUDDY_CLIENT) */
     let client;
     let buf = "";
@@ -115,7 +119,7 @@ export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
         const ctl = new AbortController();
         running.set(String(msg.id), ctl);
         const start = Date.now();
-        run(msg.name, msg.input ?? {}, ctl.signal, client)
+        run(msg.name, msg.input ?? {}, ctl.signal, client, conn)
           .then((result) => send({ id: msg.id, result }))
           .catch((err) => send({ id: msg.id, result: `Buddy couldn't do that: ${err?.message ?? err}` }))
           .finally(() => {
@@ -130,6 +134,7 @@ export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
       if (authed) {
         authed = false;
         onClients?.(--clients);
+        onClosed?.(conn);
       }
     };
     socket.on("close", gone);

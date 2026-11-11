@@ -14,6 +14,7 @@ import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFi
 import { CASES, runEvals } from "./evals.js";
 import { createActivity } from "./activity.js";
 import { createApprovalQueue } from "./approval-queue.js";
+import { createAppSessions } from "./app-sessions.js";
 import { islandView } from "./island-state.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
@@ -1305,8 +1306,10 @@ const CLIENT_APPS = /^(claude|codex|windowsterminal|code|cursor|windsurf|lm stud
 const CLAUDE_TASK_GAP_MS = 120_000;
 const LOOKS_AT_WINDOW = new Set(["look", "read_page", "screenshot"]);
 let bridge = null;
-let claudeBrain = null;
-let claudeLastCall = 0;
+// Each AI app session gets a Brain of its own (app-sessions.js).
+/** @type {ReturnType<typeof createAppSessions<Brain>>} */
+const appSessions = createAppSessions({ makeBrain: (conn, client) => makeAppBrain(conn, client), gapMs: CLAUDE_TASK_GAP_MS });
+let lastAppCall = 0;
 let claudeSessions = 0;
 
 // The window the user works in while they chat with Claude: the frontmost one that isn't Buddy or the chat itself.
@@ -1315,10 +1318,10 @@ async function userWindow() {
   return (await listWindows()).find((w) => !own.includes(w.pid) && !CLIENT_APPS.test(w.app_name ?? "")) ?? null;
 }
 
-function marksForClaude() {
+function marksForClaude(/** @type {Brain} */ appBrain) {
   if (!pendingMarks) return "The user hasn't marked anything yet. They can press Ctrl+Alt+M and draw over what they mean.";
-  claudeBrain.marks = new Map(pendingMarks.marks.map((m) => [m.n, m.bounds]));
-  claudeBrain.target = pendingMarks.target ?? claudeBrain.target;
+  appBrain.marks = new Map(pendingMarks.marks.map((m) => [m.n, m.bounds]));
+  appBrain.target = pendingMarks.target ?? appBrain.target;
   const lines = pendingMarks.marks.map((m) => {
     const under = m.elements.length
       ? m.elements.map((e) => `${e.path}${e.value ? ` (text: ${JSON.stringify(e.value.slice(0, 200))})` : ""}`).join("; ")
@@ -1331,39 +1334,42 @@ function marksForClaude() {
   ];
 }
 
-// The app the latest call came from, by the name buddy-mcp was given ("Claude", "Codex"…), for the island.
-let clientName = "Claude";
 
-/** @param {string} name @param {any} input @param {AbortSignal} signal @param {string} [client] */
-async function runForClaude(name, input, signal, client) {
-  if (client) clientName = client;
-  claudeBrain ??= new Brain({
+// A session's Brain: tools only (the app's own model does the thinking), pointing as that session.
+function makeAppBrain(/** @type {number} */ conn, /** @type {string} */ client) {
+  const owner = `app-${conn}`;
+  /** @type {Brain} */
+  const appBrain = new Brain({
     point: (bounds, caption) => {
-      const shown = point(bounds, caption, "claude");
-      releaseLater("claude", 60_000);
+      const shown = point(bounds, caption, owner);
+      releaseLater(owner, 60_000);
       return shown;
     },
     confirm,
     status: (text) => {
-      islandFacts.appCall = oneLine(`${clientName}: ${text}`);
+      islandFacts.appCall = oneLine(`${client}: ${text}`);
       showIsland();
     },
-    explain: (plate) => openExplainer(plate, { near: cursor(), observed: claudeBrain?.target ?? null }),
+    explain: (plate) => openExplainer(plate, { near: cursor(), observed: appBrain.target ?? null }),
     trace,
     documentsDir: documentsDir(),
     openFile,
   });
-  if (Date.now() - claudeLastCall > CLAUDE_TASK_GAP_MS) claudeBrain.standing = new Set();
-  claudeLastCall = Date.now();
-  if ((LOOKS_AT_WINDOW.has(name) && !input.app && !input.root) || !claudeBrain.target) claudeBrain.target = await userWindow();
-  const abort = new AbortController();
-  signal.addEventListener("abort", () => abort.abort(), { once: true });
-  claudeBrain.abort = abort;
+  return appBrain;
+}
+
+/** @param {string} name @param {any} input @param {AbortSignal} signal @param {string | undefined} client @param {number} conn */
+async function runForClaude(name, input, signal, client, conn) {
+  lastAppCall = Date.now();
   try {
-    return name === "get_marks" ? marksForClaude() : await claudeBrain.runTool(name, input);
+    return await appSessions.call(conn, client ?? "Your AI app", signal, async (appBrain) => {
+      if ((LOOKS_AT_WINDOW.has(name) && !input.app && !input.root) || !appBrain.target) appBrain.target = await userWindow();
+      return name === "get_marks" ? marksForClaude(appBrain) : appBrain.runTool(name, input);
+    });
   } finally {
+    lastAppCall = Date.now();
     setTimeout(() => {
-      if (Date.now() - claudeLastCall > 1000) {
+      if (Date.now() - lastAppCall > 1000) {
         islandFacts.appCall = null;
         showIsland();
       }
@@ -1414,6 +1420,7 @@ function startClaudeBridge() {
   bridge = startBridge({
     dir: app.getPath("userData"),
     run: runForClaude,
+    onClosed: (conn) => appSessions.close(conn),
     trace,
     onClients: (n) => {
       trace({ kind: "bridge-clients", n });
