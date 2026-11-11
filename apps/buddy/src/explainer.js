@@ -67,32 +67,27 @@ export const escapeHtml = (s) =>
 // Model SVG may draw anything, but may not run, load or navigate. The removals repeat until nothing changes, so
 // pieces left by one removal can't join into something the pass would have removed ("<scr<script></script>ipt>").
 export function sanitizeSvg(svg) {
-  const s = String(svg ?? "").trim();
-  if (!/^<svg[\s>]/i.test(s)) return "";
-  let out = s;
-  for (let pass = 0; pass < 10; pass++) {
-    const next = sanitizeOnce(out);
-    // Settled: and, checked on its own, nothing that runs, loads or navigates is left; else nothing is shown.
-    if (next === out) return LEFT_OVER.test(out) ? "" : out;
-    out = next;
-  }
+  let out = String(svg ?? "").trim();
+  if (!/^<svg[\s>]/i.test(out)) return "";
+  let previous;
+  let passes = 0;
+  do {
+    previous = out;
+    out = out.replace(/<(script|style|foreignObject|iframe|object|embed|a)\b[\s\S]*?<\/\1\s*>/gi, "");
+    out = out.replace(/<\/?(script|style|foreignObject|iframe|object|embed|a|image|link|meta)\b[^>]*>/gi, "");
+    out = out.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    out = out.replace(/\s(xlink:)?href\s*=\s*("|')(?!#)[^"']*\2/gi, "");
+    // SMIL could otherwise animate an href to somewhere outside the page.
+    out = out.replace(/<(animate|set)\b[^>]*attributeName\s*=\s*("|')(xlink:)?href\2[^>]*\/?>/gi, "");
+  } while (out !== previous && ++passes < 10);
   // Still changing after ten passes: nothing a plate needs looks like that.
-  return "";
+  if (out !== previous) return "";
+  // Settled: and, checked on its own, nothing that runs, loads or navigates is left; else nothing is shown.
+  return LEFT_OVER.test(out) ? "" : out;
 }
 
 // What must never survive cleaning, tested independently of how the removals are written.
 const LEFT_OVER = /<\/?\s*(script|style|foreignObject|iframe|object|embed|a|image|link|meta)\b|\son\w+\s*=|\s(xlink:)?href\s*=\s*("|')(?!#)/i;
-
-/** @param {string} s */
-function sanitizeOnce(s) {
-  return s
-    .replace(/<(script|style|foreignObject|iframe|object|embed|a)\b[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<\/?(script|style|foreignObject|iframe|object|embed|a|image|link|meta)\b[^>]*>/gi, "")
-    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/\s(xlink:)?href\s*=\s*("|')(?!#)[^"']*\2/gi, "")
-    // SMIL could otherwise animate an href to somewhere outside the page.
-    .replace(/<(animate|set)\b[^>]*attributeName\s*=\s*("|')(xlink:)?href\2[^>]*\/?>/gi, "");
-}
 
 // Scenes share one page, so each scene's own ids get a prefix; the shared defs (#m1.., #dot, #head, #hatch,
 // #stipple) are left alone because a scene only references them, never defines them.
