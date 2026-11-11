@@ -14,6 +14,7 @@ import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFi
 import { CASES, runEvals } from "./evals.js";
 import { createActivity } from "./activity.js";
 import { createApprovalQueue } from "./approval-queue.js";
+import { islandView } from "./island-state.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
@@ -76,8 +77,17 @@ let tray, bubble, island, brain, tasks, voice, updates;
 let spokenTurn = false; // the question being answered was said out loud
 let spokenLang = "en"; // the language it was said in (detected when Settings asks for it)
 let heardLang = "en"; // the language of the last thing heard, waiting for the bubble to send it
-let islandState = "idle";
-let islandText; // what the island says, so it can be re-sent when a shortcut label changes
+// What the island shows is worked out from what Buddy is doing (island-state.js). These are the facts that aren't
+// held anywhere else: the running activity's latest line, an AI app's call, a download, and the last outcome.
+const islandFacts = {
+  /** @type {string | null} */ progress: null,
+  transcribing: false,
+  /** @type {string | null} */ appCall: null,
+  /** @type {string | null} */ download: null,
+  /** @type {string | null} */ notice: null,
+};
+let islandShown = ""; // what was last sent, so an unchanged island isn't re-sent
+let islandState = "idle"; // for the CPU log
 /** @type {import("./settings.js").Settings} */
 let settings = normalizeSettings({}); // loaded from disk once the app is ready
 let saying = "Speaking"; // the island's label while Buddy reads a reply aloud
@@ -100,7 +110,14 @@ function enter(next) {
     trace({ kind: "refused-mode-change", from: mode, to: next });
     return false;
   }
+  if (next !== mode) {
+    islandFacts.progress = null;
+    islandFacts.transcribing = false;
+    // A new activity replaces the last outcome; going back to idle leaves the outcome to be shown.
+    if (next !== "idle") islandFacts.notice = null;
+  }
   mode = next;
+  showIsland();
   return true;
 }
 /** @type {{ n: number, displayId: number, points: DipPoint[], bbox: DipRect }[]} */
@@ -423,8 +440,8 @@ function createIsland() {
   island.once("ready-to-show", () => island.showInactive());
   island.webContents.on("did-finish-load", () => {
     const taken = takenHotkeys();
-    if (taken.length) setIsland("done", `${taken.map((n) => keyLabel(hotkey(n))).join(", ")} is used by another app: change it in Settings`);
-    else setIsland("idle");
+    if (taken.length) notice(`${taken.map((n) => keyLabel(hotkey(n))).join(", ")} is used by another app: change it in Settings`);
+    showIsland({ force: true });
     if (tasks) island.webContents.send("tasks", tasks.list());
   });
   island.webContents.on("render-process-gone", () => {
@@ -464,23 +481,48 @@ function keepIsland() {
 
 const keyLabel = (accel) => accel.replace("Control", "Ctrl").replace("CommandOrControl", "Ctrl");
 
-function setIsland(state, text) {
-  islandState = state;
-  islandText = text;
-  if (island && !island.isDestroyed()) island.webContents.send("island", { state, text, hotkey: keyLabel(hotkey("ask")), talkKey: keyLabel(hotkey("talk")) });
+// Redraws the island from the facts. Changes made in the same moment (an answer ending, then its outcome) are drawn
+// once, on the next tick, so the island doesn't flicker through the state in between.
+let islandPending = false;
+function showIsland({ force = false } = {}) {
+  if (force) islandShown = "";
+  if (islandPending) return;
+  islandPending = true;
+  setImmediate(() => {
+    islandPending = false;
+    if (!island || island.isDestroyed()) return;
+    const view = islandView({
+      mode,
+      approval: approvals.current()?.summary ?? null,
+      ...islandFacts,
+      speaking: !!voice?.speaking,
+      saying,
+      bubbleOpen: !!bubble && !bubble.isDestroyed() && bubble.isVisible(),
+    });
+    const message = { ...view, hotkey: keyLabel(hotkey("ask")), talkKey: keyLabel(hotkey("talk")) };
+    const key = JSON.stringify(message);
+    if (key === islandShown) return;
+    islandShown = key;
+    islandState = view.state;
+    island.webContents.send("island", message);
+  });
 }
 
-// The island when nothing is running: speaking while Buddy still talks, active while the bubble is open, else idle.
-// Active says "Ready", never "Listening": the microphone is only on after the talk shortcut (mode "listening").
-function restIsland() {
-  if (voice?.speaking) setIsland("speaking", saying);
-  else if (bubble.isVisible()) setIsland("active", "Ready");
-  else setIsland("idle");
+/** The running activity's latest line ("Reading the page…"). */
+function progress(/** @type {string} */ text) {
+  islandFacts.progress = text;
+  showIsland();
+}
+
+/** An outcome to show once the activity is over: the answer, an error, "Typed 12 words". The island fades it. */
+function notice(/** @type {string} */ text) {
+  islandFacts.notice = text;
+  showIsland();
 }
 
 const status = (text) => {
   bubble.webContents.send("status", text);
-  setIsland("busy", text);
+  progress(text);
 };
 
 const oneLine = (text) => (text.length > 70 ? `${text.slice(0, 67)}…` : text);
@@ -511,10 +553,10 @@ function createBubble() {
   bubble.on("hide", () => {
     if (mode !== "idle") return;
     clearMarks();
-    restIsland();
+    showIsland();
   });
   bubble.on("show", () => {
-    if (mode === "idle") restIsland();
+    if (mode === "idle") showIsland();
   });
 }
 
@@ -636,7 +678,7 @@ async function runExplain(dipPoint, question) {
   lastAskAt = Date.now();
   focusPoint = dipPoint;
   explainerShown = false;
-  setIsland("busy", "Looking at that…");
+  progress("Looking at that…");
   try {
     const physical = toPhysicalPoint(dipPoint);
     const [win, shot] = await Promise.all([windowAt(physical, ownPids()), captureAround(dipPoint)]);
@@ -644,15 +686,15 @@ async function runExplain(dipPoint, question) {
     const element = await elementAt(win, physical);
     const reply = await brain.explain({ ...shot, element, target: win, question });
     if (explainerShown) {
-      setIsland("done", oneLine(reply));
+      notice(oneLine(reply));
     } else {
-      setIsland("done", "Answered");
+      notice("Answered");
       bubble.webContents.send("status", "");
       bubble.webContents.send("reply", reply);
       showBubble({ focus: false });
     }
   } catch (err) {
-    setIsland("done", `Couldn't explain that: ${err.message}`);
+    notice(`Couldn't explain that: ${err.message}`);
   } finally {
     enter("idle");
     releaseLater("bubble");
@@ -678,7 +720,7 @@ async function startMarking() {
   clearMarks();
   enter("marking");
   hideBubble({ now: true });
-  setIsland("picking", "Getting the screen ready…");
+  progress("Getting the screen ready…");
   markDisplay = screen.getDisplayNearestPoint(cursor());
   try {
     const shot = await grabDisplay(markDisplay);
@@ -708,7 +750,7 @@ async function startMarking() {
   } catch (err) {
     stopMarkMode();
     enter("idle");
-    setIsland("done", `Couldn't start marking: ${err.message}`);
+    notice(`Couldn't start marking: ${err.message}`);
   }
 }
 
@@ -734,7 +776,7 @@ function cancelMarking() {
   stopMarkMode();
   clearMarks();
   enter("idle");
-  restIsland();
+  showIsland();
 }
 
 const dedupe = (els) => [...new Map(els.map((e) => [e.path, e])).values()];
@@ -761,7 +803,7 @@ async function finishMarking({ image, strokes } = {}) {
   });
   stopMarkMode(90);
   enter("reading-marks");
-  setIsland("busy", "Reading what you marked…");
+  progress("Reading what you marked…");
   try {
     // Sample each stroke at its start, middle and end, and read the elements under those points.
     const samples = marks
@@ -798,11 +840,11 @@ async function finishMarking({ image, strokes } = {}) {
     bubble.webContents.send("marks", pendingMarks.marks.map((m) => ({ n: m.n, label: markLabel(m) })));
     enter("idle");
     showBubble();
-    restIsland();
+    showIsland();
   } catch (err) {
     enter("idle");
     clearMarks();
-    setIsland("done", "Couldn't read the marks: " + err.message);
+    notice("Couldn't read the marks: " + err.message);
   }
 }
 
@@ -813,13 +855,13 @@ ipcMain.on("mark-ready", (e) => {
   markWin.setBounds(markDisplay.bounds); // Windows clamps oversized windows to the work area on create
   markWin.focus();
   keepIsland();
-  setIsland("picking", "Click to explain · draw to ask");
+  progress("Click to explain · draw to ask");
   // Backups in case Windows refuses the still keyboard focus.
   globalShortcut.register("Return", () => markWin?.webContents.send("mark-command", "done"));
   globalShortcut.register("Escape", cancelMarking);
 });
 ipcMain.on("mark-count", (e, n) => {
-  if (fromMarker(e)) setIsland("picking", n ? `${n} marked · Enter to ask` : "Click to explain · draw to ask");
+  if (fromMarker(e)) progress(n ? `${n} marked · Enter to ask` : "Click to explain · draw to ask");
 });
 ipcMain.on("mark-finish", (e, result) => {
   if (fromMarker(e)) finishMarking(result);
@@ -831,7 +873,7 @@ ipcMain.on("mark-click", (e, local) => {
   const dip = asDipPoint({ x: markDisplay.bounds.x + Number(local.x), y: markDisplay.bounds.y + Number(local.y) });
   stopMarkMode();
   enter("working");
-  setIsland("busy", "Looking at that…");
+  progress("Looking at that…");
   // Let the still close before the screen is captured for the explainer.
   setTimeout(() => runExplain(dip), 120);
 });
@@ -908,7 +950,7 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
   spokenLang = spokenTurn ? heardLang : "en";
   voice?.hush();
   releaseFocus();
-  setIsland("busy", "Thinking…");
+  progress("Thinking…");
   let reply;
   try {
     const withMarks = pendingMarks;
@@ -916,13 +958,13 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
     const how = { spoken: spokenTurn, lang: spokenLang };
     reply = withMarks ? await brain.askWithMarks(text, withMarks, how) : await brain.ask(text, target, how);
   } catch (err) {
-    setIsland("done", "Something broke");
+    notice("Something broke");
     return { reply: `Something broke: ${err.message}` };
   } finally {
     enter("idle");
     releaseLater("bubble");
   }
-  setIsland("done", oneLine(reply));
+  notice(oneLine(reply));
   // After the mode is back to idle, so the island shows Buddy speaking (and a click stops it).
   if (talksBack(spokenTurn)) speak(reply);
   return { reply };
@@ -995,7 +1037,11 @@ ipcMain.on("island-action", (_e, action) => {
   else if (verb === "talk") talk();
   else if (verb === "hush") voice?.hush();
   else if (verb === "show") showBubble({ focus: false });
-  else if (verb === "settle" && mode === "idle") restIsland();
+  // The island faded an outcome: it has been seen.
+  else if (verb === "settle") {
+    islandFacts.notice = null;
+    showIsland();
+  }
   else if (verb === "task" && !id) newTask();
   else if (verb === "task") tasks.toggle(id);
   else if (verb === "task-open") tasks.open(id);
@@ -1027,12 +1073,12 @@ const approvals = createApprovalQueue({
     if (bounds) point(bounds, summary);
     showBubble({ focus: false });
     bubble.webContents.send("confirm", { summary, note });
-    setIsland("confirm", `Waiting for your OK: ${summary}`);
+    showIsland();
   },
   clear: () => {
     bubble.webContents.send("confirm-clear");
-    if (mode === "working") setIsland("busy", "Working…");
-    else restIsland();
+    if (mode === "working") islandFacts.progress = "Working…";
+    showIsland();
   },
   trace,
 });
@@ -1079,13 +1125,13 @@ async function talk() {
   if (mode === "listening") return voice.finishListening();
   const wasSpeaking = voice.speaking;
   voice.hush();
-  if (mode !== "idle") return wasSpeaking || setIsland(islandState, BUSY[mode]);
+  if (mode !== "idle") return wasSpeaking || progress(BUSY[mode]);
   if (!brain) return summon();
   enter("listening");
   if (bubble.isVisible()) showBubble();
   else await summon();
   bubble.webContents.send("listening", true);
-  setIsland("listening", "Listening…");
+  progress("Listening…");
   const { text, error, lang } = await voice.listen();
   heardLang = lang ?? "en";
   bubble.webContents.send("listening", false);
@@ -1093,8 +1139,8 @@ async function talk() {
   if (currentMode() !== "listening") return;
   enter("idle");
   if (text) return bubble.webContents.send("voice-text", text);
-  if (error === "cancelled") return restIsland();
-  setIsland("done", HEARD_ERRORS[error] ?? `Couldn't hear you: ${error}`);
+  if (error === "cancelled") return showIsland();
+  notice(HEARD_ERRORS[error] ?? `Couldn't hear you: ${error}`);
 }
 
 // ---------- Dictation: say it, and it's typed where you are ----------
@@ -1105,24 +1151,24 @@ async function dictate() {
   if (mode === "dictating") return voice.finishListening();
   const wasSpeaking = voice.speaking;
   voice.hush();
-  if (mode !== "idle") return wasSpeaking || setIsland(islandState, BUSY[mode]);
+  if (mode !== "idle") return wasSpeaking || progress(BUSY[mode]);
   enter("dictating");
   const continuous = settings.dictateStop === "press";
   const key = keyLabel(hotkey("dictate"));
-  setIsland("listening", continuous ? `Dictating… ${key} to stop` : "Dictating… pause when you're done");
+  progress(continuous ? `Dictating… ${key} to stop` : "Dictating… pause when you're done");
   let words = 0;
   const result = await voice.dictate({
     continuous,
     onText: async (text) => {
       await typeText(words ? ` ${text}` : text);
       words += text.split(/\s+/).filter(Boolean).length;
-      if (continuous && currentMode() === "dictating") setIsland("listening", `Dictating… ${words} words · ${key} to stop`);
+      if (continuous && currentMode() === "dictating") progress(`Dictating… ${words} words · ${key} to stop`);
     },
   });
   enter("idle");
-  if (result.pieces) setIsland("done", `Typed ${words} word${words === 1 ? "" : "s"}`);
-  else if (result.error === "cancelled") restIsland();
-  else setIsland("done", HEARD_ERRORS[result.error] ?? `Couldn't hear you: ${result.error}`);
+  if (result.pieces) notice(`Typed ${words} word${words === 1 ? "" : "s"}`);
+  else if (result.error === "cancelled") showIsland();
+  else notice(HEARD_ERRORS[result.error] ?? `Couldn't hear you: ${result.error}`);
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1158,16 +1204,19 @@ ipcMain.on("talk", () => talk());
 
 let downloadSettle = null; // returns the island to rest once download progress stops coming
 function onVoiceState(state, info) {
-  if (state === "listening" && mode === "listening") setIsland("listening", "Listening… pause when you're done");
-  else if (state === "transcribing" && mode === "listening") setIsland("busy", "Got it…");
-  // While a question runs, the island shows its progress; spoken guide steps don't take it over.
-  else if (state === "speaking" && mode === "idle") setIsland("speaking", saying);
-  else if (state === "quiet" && islandState === "speaking") restIsland();
-  else if (state === "downloading" && mode === "idle") {
-    setIsland("busy", `Getting Buddy's ${info.what === "speaking" ? "voice" : "ears"} ready… ${Math.round((100 * info.loaded) / info.total)}%`);
+  if (state === "listening" && mode === "listening") progress("Listening… pause when you're done");
+  else if (state === "transcribing" && mode === "listening") {
+    islandFacts.transcribing = true;
+    showIsland();
+  } else if (state === "downloading") {
+    islandFacts.download = `Getting Buddy's ${info.what === "speaking" ? "voice" : "ears"} ready… ${Math.round((100 * info.loaded) / info.total)}%`;
+    showIsland();
     clearTimeout(downloadSettle);
-    downloadSettle = setTimeout(() => islandState === "busy" && mode === "idle" && restIsland(), 4000);
-  }
+    downloadSettle = setTimeout(() => {
+      islandFacts.download = null;
+      showIsland();
+    }, 4000);
+  } else showIsland(); // speaking or quiet: the island reads voice.speaking
 }
 
 function startVoice() {
@@ -1295,7 +1344,10 @@ async function runForClaude(name, input, signal, client) {
       return shown;
     },
     confirm,
-    status: (text) => setIsland("busy", oneLine(`${clientName}: ${text}`)),
+    status: (text) => {
+      islandFacts.appCall = oneLine(`${clientName}: ${text}`);
+      showIsland();
+    },
     explain: (plate) => openExplainer(plate, { near: cursor(), observed: claudeBrain?.target ?? null }),
     trace,
     documentsDir: documentsDir(),
@@ -1311,7 +1363,10 @@ async function runForClaude(name, input, signal, client) {
     return name === "get_marks" ? marksForClaude() : await claudeBrain.runTool(name, input);
   } finally {
     setTimeout(() => {
-      if (mode === "idle" && !waitingForOk() && Date.now() - claudeLastCall > 1000) restIsland();
+      if (Date.now() - claudeLastCall > 1000) {
+        islandFacts.appCall = null;
+        showIsland();
+      }
     }, 1500);
   }
 }
@@ -1363,7 +1418,7 @@ function startClaudeBridge() {
     onClients: (n) => {
       trace({ kind: "bridge-clients", n });
       // Say so once when a chat starts using Buddy; tool calls then show on the island as "Codex: …" and so on.
-      if (n > claudeSessions && mode === "idle" && !waitingForOk()) setIsland("done", "Your AI app is using Buddy");
+      if (n > claudeSessions) notice("Your AI app is using Buddy");
       claudeSessions = n;
     },
   });
@@ -1392,7 +1447,7 @@ function startTasks() {
 // while the bubble is free for something else.
 async function newTask({ fromBubble = false } = {}) {
   if (!brain) return summon();
-  if (fromBubble && mode !== "idle") return setIsland("done", "Let Buddy finish this answer, then make it a task");
+  if (fromBubble && mode !== "idle") return progress("Let Buddy finish this answer, then make it a task");
   let result;
   if (fromBubble && brain.transcript().length) {
     result = await tasks.create({ brain, target });
@@ -1404,7 +1459,7 @@ async function newTask({ fromBubble = false } = {}) {
   } else {
     result = await tasks.create();
   }
-  if (result.error) setIsland("done", result.error);
+  if (result.error) notice(result.error);
   else hideBubble({ now: true });
 }
 ipcMain.on("new-task", () => newTask({ fromBubble: true }));
@@ -1495,7 +1550,7 @@ function changeSettings(patch) {
   if (next.language !== before.language) voice?.prepare();
   if (next.talkBack === "never" && before.talkBack !== "never") voice?.hush();
   buildTrayMenu();
-  setIsland(islandState, islandText);
+  showIsland({ force: true });
   settingsWindow?.refresh();
   return problems;
 }
@@ -1751,7 +1806,7 @@ function startUpdates() {
       // Say so once, on the island; the tray and Settings keep offering the restart.
       if (state.status === "ready" && announcedUpdate !== state.next) {
         announcedUpdate = state.next;
-        if (mode === "idle") setIsland("done", `Buddy ${state.next} is ready: restart from the tray to update`);
+        notice(`Buddy ${state.next} is ready: restart from the tray to update`);
       }
     },
     trace,

@@ -55,5 +55,8 @@ export function createApprovalQueue({ show, clear, trace }) {
 
     /** How many requests are waiting. */
     size: () => waiting.length,
+
+    /** The request on the card, or null. */
+    current: () => waiting[0] ?? null,
   };
 }
