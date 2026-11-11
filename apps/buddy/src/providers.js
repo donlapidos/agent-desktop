@@ -108,21 +108,35 @@ export async function listModels(/** @type {ProviderId} */ provider, /** @type {
 /** @typedef {{ tools: boolean | null, vision: boolean | null }} Caps  null: not known */
 /** @typedef {"good" | "no_images" | "no_tools" | "unknown"} Verdict */
 
-/** @type {Map<string, { tools?: boolean, vision?: boolean }>} */
+/** @typedef {{ passed: number, total: number, avgMs: number, at: string }} Tested  the last model check (evals.js) */
+/** @typedef {{ tools?: boolean, vision?: boolean, tested?: Tested }} Known */
+/** @type {Map<string, Known>} */
 const known = new Map();
-/** @type {((entries: Record<string, { tools?: boolean, vision?: boolean }>) => void) | null} */
+/** @type {((entries: Record<string, Known>) => void) | null} */
 let saveKnown = null;
 const capsKey = (/** @type {string | undefined} */ baseURL, /** @type {string} */ model) => `${baseURL ?? ""}|${model}`;
 
 /** Starts from what was learned before, and saves what's learned from now on. */
-export function useCapsStore(/** @type {Record<string, any>} */ entries, /** @type {(entries: Record<string, { tools?: boolean, vision?: boolean }>) => void} */ save) {
+export function useCapsStore(/** @type {Record<string, any>} */ entries, /** @type {(entries: Record<string, Known>) => void} */ save) {
   known.clear();
   for (const [k, v] of Object.entries(entries ?? {})) {
     if (!v || typeof v !== "object") continue;
-    known.set(k, { ...(typeof v.tools === "boolean" ? { tools: v.tools } : {}), ...(typeof v.vision === "boolean" ? { vision: v.vision } : {}) });
+    const t = v.tested;
+    const tested = t && Number.isInteger(t.passed) && Number.isInteger(t.total) && t.total > 0 ? { tested: { passed: t.passed, total: t.total, avgMs: Number(t.avgMs) || 0, at: String(t.at ?? "") } } : {};
+    known.set(k, { ...(typeof v.tools === "boolean" ? { tools: v.tools } : {}), ...(typeof v.vision === "boolean" ? { vision: v.vision } : {}), ...tested });
   }
   saveKnown = save;
 }
+
+/** Keeps the result of the last model check for this model. */
+export function noteTested(/** @type {string | undefined} */ baseURL, /** @type {string} */ model, /** @type {Tested} */ tested) {
+  const k = capsKey(baseURL, model);
+  known.set(k, { ...(known.get(k) ?? {}), tested });
+  saveKnown?.(Object.fromEntries(known));
+}
+
+/** @returns {Tested | null} */
+export const testedOf = (/** @type {string | undefined} */ baseURL, /** @type {string} */ model) => known.get(capsKey(baseURL, model))?.tested ?? null;
 
 /** Records what a model turned out to be able, or not able, to do. Unknowns (null) change nothing. */
 export function learnCaps(/** @type {string | undefined} */ baseURL, /** @type {string} */ model, /** @type {{ tools?: boolean | null, vision?: boolean | null }} */ caps) {

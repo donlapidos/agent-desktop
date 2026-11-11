@@ -12,7 +12,8 @@
     "measure:idle": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-idle.ps1",
     "test": "node --test \"test/*.test.js\"",
     "dist": "electron-builder --win --publish never",
-    "dist:dir": "electron-builder --win --dir"
+    "dist:dir": "electron-builder --win --dir",
+    "eval": "node scripts/eval.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.321",

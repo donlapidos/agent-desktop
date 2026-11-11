@@ -10,7 +10,8 @@ import { AgentBrain } from "./agent-brain.js";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
 import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop, staleClaude } from "./claude-setup.js";
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
-import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, providerForKey, useCapsStore, verdict } from "./providers.js";
+import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, noteTested, providerForKey, testedOf, useCapsStore, verdict } from "./providers.js";
+import { CASES, runEvals } from "./evals.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
@@ -157,7 +158,52 @@ function modelListState() {
   const list = providerModelLists.get(provider) ?? { models: [], error: null, loading: false };
   const chosen = settings.providerModels[provider];
   const shown = list.models.length ? list.models : chosen ? [chosen] : [];
-  return { ...list, verdicts: Object.fromEntries(shown.map((m) => [m, verdict(capsOf(provider, providerURL(provider) ?? undefined, m))])) };
+  const at = providerURL(provider) ?? undefined;
+  return { ...list, verdicts: Object.fromEntries(shown.map((m) => [m, verdict(capsOf(provider, at, m))])), tested: Object.fromEntries(shown.map((m) => [m, testedOf(at, m)])) };
+}
+
+// ---------- Model check (evals.js), run from Settings on the chosen model with the saved key ----------
+
+/** @type {{ provider: ProviderId, model: string, running: boolean, stopped?: boolean, done: number, total: number, passed: number, missed: string[], abort: AbortController } | null} */
+let modelCheck = null;
+const chosenModel = () => (currentProvider() === "anthropic" ? settings.model : settings.providerModels[currentProvider()]);
+
+/** Starts a check of the chosen model, or stops the one running. Resolves an error message, or null. */
+function checkModel() {
+  if (modelCheck?.running) {
+    modelCheck.abort.abort();
+    return null;
+  }
+  const provider = currentProvider();
+  const model = chosenModel();
+  if (!providerReady() || !model) return "Choose a provider and a model first.";
+  const baseURL = providerURL(provider) ?? undefined;
+  const check = { provider, model, running: true, done: 0, total: CASES.length, passed: 0, missed: /** @type {string[]} */ ([]), abort: new AbortController() };
+  modelCheck = check;
+  runEvals({
+    provider,
+    apiKey: loadApiKey() ?? "",
+    baseURL,
+    signal: check.abort.signal,
+    onCase: (r) => {
+      check.done++;
+      if (r.passed) check.passed++;
+      else check.missed.push(r.title);
+      settingsWindow?.refresh();
+    },
+  })
+    .then((run) => {
+      trace({ kind: "model-check", provider, model, passed: run.passed, total: run.total, avgMs: run.avgMs, stopped: check.abort.signal.aborted });
+      if (!check.abort.signal.aborted && run.total === CASES.length) noteTested(baseURL, model, { passed: run.passed, total: run.total, avgMs: run.avgMs, at: new Date().toISOString() });
+    })
+    .catch((err) => trace({ kind: "model-check", provider, model, error: String(err) }))
+    .finally(() => {
+      check.running = false;
+      check.stopped = check.abort.signal.aborted;
+      settingsWindow?.refresh();
+    });
+  settingsWindow?.refresh();
+  return null;
 }
 
 // What Buddy has learned about models' abilities, kept between runs.
@@ -1498,6 +1544,8 @@ function settingsState() {
     key: { saved: fs.existsSync(keyFile()), fromEnv: !!envKey(), env: PROVIDERS[currentProvider()].keyEnv },
     providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, note: p.note, key: p.key, local: !!p.local, keyFrom: p.keyFrom, placeholder: p.placeholder, saved: !!envKey(p.id) || fs.existsSync(keyFile(p.id)), address: providerURL(p.id), defaultAddress: PROVIDERS[p.id].baseURL ?? null, ready: providerReady(p.id) })),
     providerModels: modelListState(),
+    modelCheck: modelCheck && { model: modelCheck.model, provider: modelCheck.provider, running: modelCheck.running, stopped: !!modelCheck.stopped, done: modelCheck.done, total: modelCheck.total, passed: modelCheck.passed, missed: modelCheck.missed },
+    tested: testedOf(providerURL() ?? undefined, chosenModel() ?? ""),
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
     claude: claudeStatus(),
@@ -1573,6 +1621,7 @@ const settingsWindow = createSettingsWindow({
   preview: (sid, speed) => voice?.say(PREVIEW_LINE, { sid: Math.min(VOICES - 1, Math.max(0, Math.trunc(sid) || 0)), speed: Math.min(SPEED.max, Math.max(SPEED.min, speed || 1)) }),
   setKey: setApiKey,
   setAddress,
+  checkModel,
   removeKey: () => {
     fs.rmSync(keyFile(), { force: true });
     if (!envKey() && !providerReady()) brain = null;

@@ -32,6 +32,8 @@
     "src/speakable.js",
     "src/explainer.js",
     "src/documents.js",
-    "src/mcp-server.js"
+    "src/mcp-server.js",
+    "src/evals.js",
+    "src/providers.js"
   ]
 }
