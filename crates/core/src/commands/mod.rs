@@ -54,12 +54,17 @@ pub mod query;
 pub mod resize_window;
 pub mod restore;
 pub mod right_click;
+pub mod sandbox;
+pub mod sandbox_action;
+pub mod sandbox_install;
+mod sandbox_list;
 pub mod screenshot;
 #[cfg(test)]
 mod screenshot_tests;
 pub mod scroll;
 pub mod scroll_to;
 pub mod select;
+pub(crate) mod selector_observation;
 pub mod session;
 pub mod set_value;
 pub mod skills;
@@ -70,6 +75,8 @@ pub mod toggle;
 pub mod trace;
 pub mod triple_click;
 pub mod type_text;
+mod type_text_interval;
+mod type_text_interval_verify;
 pub mod uncheck;
 pub mod version;
 pub mod wait;
@@ -101,3 +108,6 @@ mod stale_retry_test_support;
 
 #[cfg(test)]
 mod operation_passthrough_tests;
+
+#[cfg(test)]
+mod application_surface_tests;

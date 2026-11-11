@@ -1,8 +1,11 @@
 #import "cursor_overlay_chrome.h"
 
 const CGFloat ADRippleSize = 108.0;
-static const NSWindowLevel ADEffectLevel = 24;
+static const NSWindowLevel ADEffectLevel = NSPopUpMenuWindowLevel + 1;
 static const NSUInteger ADRippleRings = 2;
+// Room around the highlight for its glow and the pop it starts with, both of
+// which draw outside the outline and would be clipped at the window's edge.
+static const CGFloat ADHighlightBleed = 24.0;
 
 static AgentDesktopCursorStyle ADCurrentStyle = {
     .fill = {1.0, 1.0, 1.0},
@@ -89,7 +92,7 @@ NSWindow *ADWindow(NSRect frame) {
     window.ignoresMouseEvents = YES;
     window.releasedWhenClosed = NO;
     window.hidesOnDeactivate = NO;
-    window.level = 25;
+    window.level = NSPopUpMenuWindowLevel + 2;
     window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
                                 NSWindowCollectionBehaviorFullScreenAuxiliary;
     NSView *view = [[NSView alloc]
@@ -198,8 +201,10 @@ void ADHighlightShow(NSRect frame, double seconds) {
     ADHighlightBorder.shadowOpacity = 0.5;
     ADHighlightBorder.shadowRadius = 10.0;
     ADHighlightBorder.shadowOffset = CGSizeZero;
-    [ADHighlightWindow setFrame:frame display:NO];
-    ADHighlightBorder.frame = CGRectMake(0.0, 0.0, frame.size.width, frame.size.height);
+    [ADHighlightWindow setFrame:NSInsetRect(frame, -ADHighlightBleed, -ADHighlightBleed)
+                        display:NO];
+    ADHighlightBorder.frame =
+        CGRectMake(ADHighlightBleed, ADHighlightBleed, frame.size.width, frame.size.height);
     [ADHighlightBorder removeAllAnimations];
     [ADHighlightBorder addAnimation:ADHold(@"opacity",
                                            @[ @0.0, @1.0, @1.0, @0.0 ],
@@ -212,6 +217,35 @@ void ADHighlightShow(NSRect frame, double seconds) {
                                            seconds)
                              forKey:@"agent-highlight-pop"];
     [ADHighlightWindow orderFrontRegardless];
+}
+
+static __strong NSWindow *ADCaretWindow = nil;
+static __strong CALayer *ADCaretBar = nil;
+
+void ADCaretShow(NSRect frame) {
+    if (ADCaretWindow == nil) {
+        ADCaretWindow = ADWindow(frame);
+        ADCaretWindow.level = ADEffectLevel;
+        ADCaretBar = [CALayer layer];
+        ADCaretBar.cornerRadius = 1.0;
+        ADFreezeLayer(ADCaretBar);
+        [ADCaretWindow.contentView.layer addSublayer:ADCaretBar];
+    }
+    ADCaretBar.backgroundColor = ADColor(ADCurrentStyle.accent, 1.0);
+    [ADCaretWindow setFrame:frame display:NO];
+    ADCaretBar.frame = CGRectMake(0.0, 0.0, frame.size.width, frame.size.height);
+    [ADCaretWindow orderFrontRegardless];
+    [CATransaction flush];
+}
+
+bool ADCaretShowing(void) {
+    return ADCaretWindow != nil && ADCaretWindow.isVisible;
+}
+
+void ADCaretStop(void) {
+    [ADCaretWindow orderOut:nil];
+    ADCaretWindow = nil;
+    ADCaretBar = nil;
 }
 
 void ADHighlightStop(void) {

@@ -17,6 +17,8 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 agent-desktop-macos = { path = "../crates/macos" }
+
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -49,16 +51,24 @@ name = "cli_process"
 path = "tests/cli_process.rs"
 
 [[test]]
+name = "cli_stdin"
+path = "tests/cli_stdin.rs"
+
+[[test]]
+name = "mcp_process"
+path = "tests/mcp_process.rs"
+
+[[test]]
+name = "command_host_absent"
+path = "tests/command_host_absent.rs"
+
+[[test]]
 name = "windows_private_file_install"
 path = "tests/windows_private_file_install.rs"
 
 [[test]]
 name = "windows_cursor_overlay_teardown"
 path = "tests/windows_cursor_overlay_teardown.rs"
-
-[[test]]
-name = "command_host_process"
-path = "tests/command_host_process.rs"
 
 [lints]
 workspace = true

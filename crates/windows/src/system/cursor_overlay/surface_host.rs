@@ -17,13 +17,13 @@
 use super::presentation::{Presentation, RestState};
 #[cfg(target_os = "windows")]
 use crate::system::cursor_overlay::{
-    animation, fade, geometry, label, monitors, render, reveal::Reveal, schedule, session_state,
-    text, topology::DisplayTopology, window::OverlayWindow,
+    animation, caret_mark::CaretMark, fade, label, monitors, render, reveal::Reveal, schedule,
+    session_state, text, topology::DisplayTopology, window::OverlayWindow,
 };
 #[cfg(target_os = "windows")]
 use agent_desktop_core::{
     CURSOR_HIGHLIGHT_HOLD_MS, CURSOR_IDLE_REST_MS, CURSOR_REST_FADE_MS, CursorMotion,
-    CursorOverlayControl, CursorPhase, Point, Rect,
+    CursorOverlayControl, CursorPhase, LABEL_FONT_POINTS, Point, Rect,
 };
 #[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
@@ -36,6 +36,7 @@ const REST_FADE_STEPS: u32 = 13;
 #[cfg(target_os = "windows")]
 pub(crate) struct SurfaceHost {
     window: OverlayWindow,
+    caret: CaretMark,
     session_id: String,
     presentation: Presentation,
     rest: RestState,
@@ -50,6 +51,7 @@ impl SurfaceHost {
         let pose = monitors::resting_point(topology.monitors()).unwrap_or(Point { x: 0.0, y: 0.0 });
         Ok(Self {
             window: OverlayWindow::create()?,
+            caret: CaretMark::create()?,
             session_id,
             presentation: Presentation::resting_at(pose),
             rest: RestState {
@@ -70,6 +72,9 @@ impl SurfaceHost {
     /// dispatches the moment its acknowledgement arrives, so the cursor
     /// has to already be where the click will land.
     pub(crate) fn apply(&mut self, control: &CursorOverlayControl) {
+        if self.rest.resting && control.is_caret_follow() {
+            return;
+        }
         self.rest.resting = false;
         self.rest.quiet_since = Instant::now();
         if let Some(style) = control.style() {
@@ -99,6 +104,11 @@ impl SurfaceHost {
                         .clone(),
                     instruction.target().cloned(),
                 ),
+                phase @ (CursorPhase::Caret | CursorPhase::CaretFollow) => {
+                    let accent = self.presentation.style.accent_rgb();
+                    let follow = phase == CursorPhase::CaretFollow;
+                    self.caret.place(instruction.target(), accent, follow);
+                }
                 CursorPhase::Effect => {}
             },
         }
@@ -128,6 +138,7 @@ impl SurfaceHost {
                         instruction.is_click(),
                         interrupt,
                     ),
+                    CursorPhase::Caret | CursorPhase::CaretFollow => {}
                 }
             }
             CursorOverlayControl::Hide { .. } | CursorOverlayControl::Disable { .. } => {}
@@ -155,6 +166,8 @@ impl SurfaceHost {
     /// action is blocked on, so giving it up for a newer control would
     /// dispatch a click at wherever the cursor had got to.
     fn travel(&mut self, destination: Point, target: Option<Rect>) {
+        self.caret
+            .hide_when_leaving(&self.presentation.pose, &destination);
         let motion = CursorMotion::new(self.presentation.pose.clone(), destination.clone())
             .with_impact(false)
             .with_ripple(false);
@@ -248,7 +261,7 @@ impl SurfaceHost {
             ripple_phase,
             target: target.cloned(),
             highlight_opacity,
-            label: self.presentation.label.as_deref(),
+            label: self.presentation.label_pill(),
             screen,
         };
         let mut composed = render::compose(&frame);
@@ -259,8 +272,8 @@ impl SurfaceHost {
                 &mut composed.surface,
                 &text_rect,
                 label,
-                self.presentation.style.rim_rgb(),
-                geometry::BUBBLE_FONT_POINTS * self.presentation.style.size(),
+                [1.0, 1.0, 1.0],
+                LABEL_FONT_POINTS * self.presentation.style.size(),
             );
         }
         if let Some(card) = composed.card_rect {
@@ -281,6 +294,7 @@ impl SurfaceHost {
     fn clear(&self) {
         let _ = self.window.present(0, 0, 1, 1, &[0u32]);
         self.window.pump();
+        self.caret.hide();
     }
 
     /// One quiet tick: pump the window, re-read the display topology, and

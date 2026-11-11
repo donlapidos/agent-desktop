@@ -4,11 +4,11 @@ use crate::adapter::{NativeHandle, PlatformAdapter};
 use crate::context::CommandContext;
 use crate::ref_action::ref_action_context::RefActionContext;
 use crate::ref_action::ref_action_wait_support::{after_scroll, trace_scroll_error};
-use crate::refs::RefEntry;
+use crate::refs::{RefEntry, resolve_saved_ref::resolve_saved_ref};
 use crate::{AdapterError, AppError, actionability};
 use serde_json::json;
 
-mod presentation;
+pub(crate) mod presentation;
 pub(crate) mod ref_action_actionability;
 pub(crate) mod ref_action_context;
 pub(crate) mod ref_action_poll;
@@ -54,14 +54,21 @@ pub(crate) fn preflight_resolved(
     request: &ActionRequest,
     stability: actionability::StabilityExpectation,
 ) -> Result<ActionabilityPreflight, AppError> {
-    check_actionability_with_trace(target, request, stability)
+    let report = ref_action_actionability::check_report_with_trace(
+        target,
+        request,
+        stability,
+        actionability::check_live_before_focus,
+    )?;
+    Ok(ref_action_actionability::preflight_from_report(&report))
 }
 
-pub(crate) fn dispatch_resolved(
+/// Dispatches the action and also returns the handle it landed on.
+pub(crate) fn dispatch_resolved_landing(
     target: RefActionContext<'_>,
     mut request: ActionRequest,
     lease: &crate::InteractionLease,
-) -> Result<ActionResult, AppError> {
+) -> Result<(ActionResult, NativeHandle), AppError> {
     let process_instance = target
         .entry
         .process
@@ -70,9 +77,7 @@ pub(crate) fn dispatch_resolved(
         .filter(|instance| !instance.is_empty())
         .ok_or_else(|| AdapterError::stale_ref_because("target process instance is unavailable"))?;
     let expected_process = crate::ProcessIdentity::new(target.entry.process.pid, process_instance);
-    let mut handle = target
-        .adapter
-        .resolve_element_strict(target.entry, target.deadline)
+    let mut handle = resolve_saved_ref(target.adapter, target.entry, target.deadline, Some(lease))
         .map_err(mark_pre_dispatch_resolution_failure)
         .inspect_err(|error| {
             crate::ref_action::ref_action_wait_support::trace_resolve_error(
@@ -86,7 +91,7 @@ pub(crate) fn dispatch_resolved(
     let preflight = match stable_preflight(&initial_target, &request) {
         Ok(preflight) => preflight,
         Err(error) => {
-            let error = into_adapter_error(error);
+            let error = mark_pre_dispatch_resolution_failure(into_adapter_error(error));
             if !crate::ref_action::ref_action_wait_evidence::should_scroll_after_preflight(
                 &request, &error,
             ) {
@@ -110,10 +115,10 @@ pub(crate) fn dispatch_resolved(
             };
             handle = match recovered {
                 Some(handle) => handle,
-                None => target
-                    .adapter
-                    .resolve_element_strict(target.entry, target.deadline)
-                    .map_err(after_scroll)?,
+                None => {
+                    resolve_saved_ref(target.adapter, target.entry, target.deadline, Some(lease))
+                        .map_err(after_scroll)?
+                }
             };
             let scrolled_target = ResolvedRefAction::new(target, &handle);
             stable_preflight(&scrolled_target, &request)
@@ -137,14 +142,19 @@ pub(crate) fn dispatch_resolved(
     let action_name = request.action.name();
     let raises_surface = request.action.may_raise_surface();
     let presentation_action = request.action.clone();
+    let ripples = presentation::effect_ripples(&final_target, &presentation_action);
     presentation::before_dispatch(&final_target, &preflight, &presentation_action, lease);
     let dispatch_result =
         crate::execute_verified_action(final_target.adapter, final_target.handle, request, lease);
+    let mut preflight = preflight;
+    if presentation::after_text_entry(&final_target, &presentation_action, &dispatch_result) {
+        preflight.presentation_bounds = None;
+    }
     presentation::after_dispatch(
         final_target.adapter,
         final_target.context,
         &preflight,
-        &presentation_action,
+        ripples,
         &dispatch_result,
     );
     let mut result = dispatch_result?;
@@ -158,7 +168,7 @@ pub(crate) fn dispatch_resolved(
             || json!({ "ref": final_target.ref_id, "action": action_name, "result": &result }),
         )
         .map_err(trace_error_after_delivery)?;
-    Ok(result)
+    Ok((result, handle))
 }
 
 /// An action that opens a sheet, menu, or alert leaves the caller staring at a
@@ -248,13 +258,8 @@ fn pre_trace_capture_deadline(parent: crate::Deadline) -> Option<crate::Deadline
     Some(parent.capped(capture_budget))
 }
 
-/// The permissive check compares live bounds against the ref's
-/// snapshot-time evidence, which a caller's own preceding `scroll-to` on
-/// this same ref legitimately moved - so a report whose only gap is
-/// `stable` is not yet a verdict, it is the reason to sample. Anything else
-/// unmet (disabled, hidden, policy) is terminal immediately: no amount of
-/// waiting changes it, and `check_live_with_stability_or_gap` already
-/// converts those to `Err` for us.
+/// Samples stability and eligible application-pointer geometry gaps within the action deadline.
+/// Dispatch still requires a complete live actionability check after sampling.
 fn stable_preflight(
     target: &ResolvedRefAction<'_>,
     request: &ActionRequest,
@@ -270,6 +275,7 @@ fn stable_preflight(
     if report.actionable {
         return Ok(ref_action_actionability::preflight_from_report(&report));
     }
+    let geometry_pending = !report.only_blocking_check_is_stability();
     let started = crate::wait::deadline::now();
     let mut sampler = actionability::stability_sampler::StabilitySampler::new();
     loop {
@@ -277,6 +283,10 @@ fn stable_preflight(
             .adapter
             .get_element_bounds(target.handle, target.deadline)?;
         let elapsed = crate::wait::deadline::now().saturating_duration_since(started);
+        let bounds = bounds.filter(|bounds| {
+            !geometry_pending
+                || (bounds.validate().is_ok() && bounds.width > 0.0 && bounds.height > 0.0)
+        });
         if sampler.observe(bounds, elapsed) {
             let stability = actionability::StabilityExpectation::strict(
                 sampler.bounds(),
@@ -308,7 +318,7 @@ pub(crate) fn execute_resolved(
     let stability =
         actionability::StabilityExpectation::permissive(target.entry.geometry.bounds_hash);
     preflight_resolved(&target, &request, stability)?;
-    let result = dispatch_resolved(target.target, request, lease);
+    let result = ref_action_single::dispatch_resolved(target.target, request, lease);
     finish_artifacts(target.target, &pre);
     result
 }
@@ -363,7 +373,7 @@ pub fn execute_entry_with_context(
             context,
         },
         request,
-        dispatch_resolved,
+        ref_action_single::dispatch_resolved,
     )
 }
 

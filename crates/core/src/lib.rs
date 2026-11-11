@@ -12,6 +12,7 @@ mod notifications;
 pub mod ref_action;
 pub mod refs;
 pub mod response;
+pub mod sandbox;
 pub mod session;
 pub mod snapshot;
 mod storage;
@@ -26,6 +27,7 @@ pub use actions::action_result::ActionResult;
 pub use actions::action_step::ActionStep;
 pub use actions::action_step_outcome::ActionStepOutcome;
 pub use actions::delivery_semantics::DeliverySemantics;
+pub use actions::headed_focus::saved_ref_focus_window;
 pub use actions::headed_requirement::HeadedRequirement;
 pub use actions::interaction_policy::InteractionPolicy;
 pub use actions::post_action::execute_verified_action;
@@ -44,8 +46,10 @@ pub use context::{CommandContext, WaitSelector};
 pub use cursor_overlay::{
     CURSOR_ARRIVAL_TIMEOUT_MS, CURSOR_HIGHLIGHT_HOLD_MS, CURSOR_IDLE_REST_MS,
     CURSOR_LABEL_REVEAL_MS, CURSOR_MOTION_BUDGET_MS, CURSOR_OVERLAY_GREETING, CURSOR_REST_FADE_MS,
-    CursorImage, CursorImages, CursorMotion, CursorMotionProfile, CursorOverlayConfig,
-    CursorOverlayControl, CursorOverlayInstruction, CursorOverlayStyle, CursorPhase, CursorPose,
+    CURSOR_SAME_POINT, CursorImage, CursorImages, CursorMotion, CursorMotionProfile,
+    CursorOverlayConfig, CursorOverlayControl, CursorOverlayInstruction, CursorOverlayStyle,
+    CursorPhase, CursorPose, LABEL_FONT_POINTS, LABEL_PILL_HEIGHT, LABEL_PILL_MAX_WIDTH,
+    LABEL_PILL_PADDING, LABEL_SHADOW_BLUR, LABEL_SHADOW_OFFSET, LABEL_SHADOW_OPACITY, LabelPill,
     MAX_CURSOR_IMAGE_BYTES, MAX_CURSOR_IMAGE_PATH_BYTES, MAX_CURSOR_IMAGE_PIXELS,
     MAX_CURSOR_LABEL_BYTES, MAX_CURSOR_LABEL_WORDS, place_label,
 };
@@ -101,6 +105,9 @@ pub use response::error_code::ErrorCode;
 pub use response::output::{ErrorPayload, Response};
 pub use response::recovery_hint::RecoveryHint;
 pub use response::retry_disposition::RetryDisposition;
+pub use sandbox::exec_passthrough::ExecPassthrough;
+pub use sandbox::provider_script_output::ProviderScriptOutput;
+pub use sandbox::provider_script_request::ProviderScriptRequest;
 pub use session::interaction_lease::InteractionLease;
 #[cfg(unix)]
 pub use session::interaction_lease::{
@@ -109,6 +116,7 @@ pub use session::interaction_lease::{
 };
 pub use session::process_lease_guard::ProcessLeaseGuard;
 pub use session::session_affinity::SessionAffinity;
+pub use snapshot::snapshot_owner::SnapshotOwner;
 pub use snapshot::snapshot_surface::SnapshotSurface;
 pub use storage::file_lock::FileLock;
 pub use storage::private_file_ops::{

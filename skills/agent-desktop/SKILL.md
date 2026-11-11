@@ -17,7 +17,7 @@ description: >
 
 # agent-desktop
 
-agent-desktop is a CLI that lets an AI agent observe and operate desktop apps through the OS accessibility tree. It is a tool, not an agent. Every command prints one JSON envelope (`ok`, `data` or `error`). The observe, act and verify loop runs in you.
+agent-desktop is a CLI that reads and operates desktop apps through the OS accessibility tree. Every command prints one JSON envelope (`ok`, `data` or `error`). It is a tool, not an agent: the observe, act and verify loop runs in you.
 
 ## Shell syntax
 
@@ -41,6 +41,8 @@ agent-desktop snapshot --root @s8f3k2p9:e3 -i --compact        # verify: re-read
 ```
 
 - A small app needs no skeleton. Take a full `snapshot -i`.
+- `-i` keeps interactive nodes only, so a row's static-text label is dropped. To tell which row a repeated button belongs to, drill that row's container with `--root` and leave out `-i`. On Windows and Linux that reads the row but does not make its button actionable: a button repeated in other rows is a twin in the window and its ref is refused (see Refs).
+- A `--root` drill adds its refs to the same snapshot id. Refs outside the drilled subtree, and the drilled root itself, stay valid; refs that were already inside it are replaced, so an old ref there returns `STALE_REF`.
 - Never skeleton a surface (`--surface menu`, `sheet`, `alert`). A surface is already focused.
 - An action that opens a menu, sheet or alert lists it in `data.surfaces`. Target that overlay next.
 - After an async step, use `wait` (see `commands-system.md`). A fixed sleep is a race.
@@ -50,8 +52,10 @@ agent-desktop snapshot --root @s8f3k2p9:e3 -i --compact        # verify: re-read
 - Output refs are qualified: `@<snapshot_id>:e<N>`, for example `@s8f3k2p9:e1`. Pass them to later commands as they are.
 - Refs are valid for one snapshot. After any UI change, re-drill the affected region or take a new snapshot.
 - Only addressable elements get refs. Static text and inert containers do not.
-- `STALE_REF`: the ref no longer matches the live UI. Take a fresh snapshot and use the new ref.
-- `AMBIGUOUS_TARGET`: more than one live element matches. Narrow the target with `find --role --name --exact` or `--root`, then use the new ref.
+- A command re-identifies the element before it acts. On macOS the ref carries the element's own address, so identical twins each keep their ref. On Windows and Linux a ref resolves only when it was the only element in the window its snapshot captured with its role, native id, name and description, counted even below a skeleton or depth cut, and exactly one live element still matches. Identical twins there have no ref path: only `--headed mouse-click --xy X,Y` can choose one, it takes the foreground, and a Linux Wayland session refuses it.
+- `STALE_REF`: the element is gone or no longer matches. `details.kind` is `saved_ref_absent`, or `retained_object_stale` on macOS. Take a fresh snapshot and use the new ref.
+- `AMBIGUOUS_TARGET`: an identical element appeared (`saved_ref_ambiguous`), or the ref was not proven unique at capture (`identity_not_unique`). Repeating the ref or re-snapshotting identical twins gives the same refusal; act on a control that is unique in the window. `identity_not_unique` also follows a snapshot that could not read the whole window in time: retake it with a larger `--timeout-ms`.
+- `TIMEOUT` with `details.kind: resolution_identity_unknown`: a live read did not answer, so identity is unproven. Nothing was sent; retry.
 - `SNAPSHOT_NOT_FOUND`: the snapshot id expired. Snapshot again.
 
 ## Delivery and retry
@@ -67,6 +71,42 @@ Action results carry `data.disposition` and errors carry `error.disposition`, ea
 ## Headless and headed
 
 Ref actions are headless by default. They use semantic accessibility calls and do not take focus, move the cursor, synthesize keys or use the clipboard. If no semantic path exists, the action fails closed. Use the global `--headed` flag only when the user explicitly permits physical input, such as double-click, hover, drag, or focus. Never switch to headed mode to recover from a headless failure. Raw coordinates (`--xy`) never imply focus. Which actions need `--headed` differs by OS: read the platform skill.
+
+## Sandboxes
+
+A sandbox is a desktop a provider manages on your machine. The provider is `macos`: a macOS VM on an Apple Silicon Mac running macOS 13 or later. Linux and Windows have no provider; to run agent-desktop in a container you manage yourself there, follow `agent-browser.dev/desktop/guides/docker-container`.
+
+```sh
+agent-desktop sandbox install                          # report the provider's state
+agent-desktop sandbox install macos                    # compile and sign the VM host, then report ready
+```
+
+```sh
+agent-desktop sandbox create demo --provider macos --set from=base   # clone a set-up sandbox; or --set ipsw=latest to install
+agent-desktop sandbox start demo                       # start it headless; add --window to show its desktop
+agent-desktop sandbox status demo                      # state, message and next command
+agent-desktop sandbox list                             # every sandbox and its state
+agent-desktop sandbox exec demo -- status              # run a command in the guest
+agent-desktop sandbox stop demo                        # stop the sandbox
+agent-desktop sandbox rm demo                          # remove it
+```
+
+Names are 1–32 lowercase letters, digits or hyphens, starting with a letter or digit. `exec` returns the guest's envelope and exit status; a provider failure returns a host error. `rm` refuses a sandbox reported as `running`; stop it first. `create` needs exactly one source: `--set from=<sandbox>`, `--set ipsw=latest` or `--set ipsw=<path>`. `start` answers `working` until the guest answers; wait for `status` to report `running` before `exec`.
+
+Read `state`, `message` and optional `next`; `ok: true` alone does not mean the sandbox is ready.
+
+- `unavailable`: satisfy the host requirements in `message` and `next`.
+- `missing`: install the provider.
+- `ready`: create a sandbox.
+- `working`: repeat the command in `next` until the work finishes.
+- `needs_setup`: have a person complete guest setup, then check status.
+- `running`: run guest commands, or stop before removal.
+- `stopped`: start the sandbox to use it, or remove it.
+- `broken`: follow `next`; a broken sandbox may need removal.
+
+A sandbox separates the desktop, not the network or the host. Sandboxes on one host share a virtual network, and a guest can reach the host's network services; keep one trust level per host. Each sandbox has its own pinned SSH host key, so a guest cannot answer for another sandbox. The SSH key under `<state root>/sandboxes/<name>/` is the guest credential, and in the guest Accessibility belongs to `sshd-keygen-wrapper` for the whole user session.
+
+Cloning a configured macOS VM has been tested end to end. Installing the first VM from a macOS image is experimental and has not been verified end to end. Provider setup steps and limits are in the docs: `agent-browser.dev/desktop/sandboxes/macos`.
 
 ## References
 

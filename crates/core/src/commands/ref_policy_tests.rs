@@ -36,6 +36,7 @@ const POLICY_TESTED_COMMANDS: &[&str] = &[
     "toggle",
     "triple_click",
     "type_text",
+    "type_text_interval",
     "uncheck",
 ];
 
@@ -95,6 +96,7 @@ impl ObservationOps for RecordingAdapter {
             .count();
         Ok(Some(0..len))
     }
+    crate::adapter::saved_ref_scope!("textfield", Some("Target"));
 }
 
 impl ActionOps for RecordingAdapter {
@@ -110,7 +112,6 @@ impl ActionOps for RecordingAdapter {
 }
 
 impl InputOps for RecordingAdapter {}
-
 impl SystemOps for RecordingAdapter {
     crate::adapter::guarded_interaction_lease!();
     crate::adapter::exact_window_focus!();
@@ -136,6 +137,7 @@ fn snapshot_id() -> String {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: true,
         },
         geometry: crate::RefGeometry {
             bounds_space: None,
@@ -168,7 +170,7 @@ fn snapshot_id() -> String {
             source_window_id: Some("w-1".into()),
             source_window_title: Some("Fixture".into()),
             source_window_bounds_hash: None,
-            source_surface: crate::adapter::SnapshotSurface::Window,
+            ..Default::default()
         },
         scope: crate::RefScope {
             root_ref: None,
@@ -243,6 +245,7 @@ fn default_ref_commands_use_least_permissive_supported_policy() {
             ref_id: format!("@{}:e1", snapshot_id.clone()),
             text: "text".into(),
             timeout_ms: None,
+            interval_ms: None,
         },
         &adapter,
         &context,
@@ -330,6 +333,7 @@ fn headed_context_reaches_every_ref_action_without_policy_downgrade() {
             ref_id: format!("@{}:e1", snapshot_id.clone()),
             text: "text".into(),
             timeout_ms: None,
+            interval_ms: None,
         },
         &adapter,
         &context,

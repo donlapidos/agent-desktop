@@ -1,10 +1,8 @@
 use agent_desktop_core::{AdapterError, AppInfo, AppInventory, ErrorCode};
 use serde::Deserialize;
 use std::time::Instant;
-
 const MAX_SNAPSHOT_BYTES: usize = 1024 * 1024;
 const MAX_FIELD_BYTES: usize = 16 * 1024;
-
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ActivationPolicy {
@@ -19,6 +17,7 @@ struct BridgedApplication {
     pid: i32,
     #[serde(default)]
     bundle_id: Option<String>,
+    executable: Option<String>,
     launch_time: NullableLaunchTime,
     activation_policy: ActivationPolicy,
 }
@@ -51,6 +50,7 @@ pub(crate) struct WindowOwner {
     pub(crate) pid: i32,
     pub(crate) name: String,
     pub(crate) bundle_id: Option<String>,
+    pub(crate) executable: Option<String>,
     pub(crate) launch_time: Option<f64>,
     pub(crate) activation_policy: ActivationPolicy,
 }
@@ -67,15 +67,17 @@ impl WindowOwnerSnapshot {
         self.owners.iter().map(|owner| owner.pid).collect()
     }
 
+    /// Pids of the apps `identifier` names. A bundle ID or executable name counts
+    /// only when no app has that display name, so an alias never merges two apps.
     pub(crate) fn matching_pids(&self, identifier: &str) -> rustc_hash::FxHashSet<i32> {
+        let named =
+            |owner: &WindowOwner| agent_desktop_core::app_name_matches(&owner.name, identifier);
+        let by_alias = !self.owners.iter().any(named);
         self.owners
             .iter()
             .filter(|owner| {
-                agent_desktop_core::app_name_matches(&owner.name, identifier)
-                    || owner
-                        .bundle_id
-                        .as_deref()
-                        .is_some_and(|bundle_id| bundle_id.eq_ignore_ascii_case(identifier))
+                named(owner)
+                    || (by_alias && has_alias(&owner.bundle_id, &owner.executable, identifier))
             })
             .map(|owner| owner.pid)
             .collect()
@@ -120,20 +122,18 @@ pub(crate) fn require_complete(skipped: &[serde_json::Value]) -> Result<(), Adap
     ))
 }
 
+/// Apps named `name`, optionally pinned to `bundle_id`. Without one, a bundle
+/// ID or executable name matches only when no app has that display name.
 pub(crate) fn list_apps_scoped_until(
     name: &str,
     bundle_id: Option<&str>,
     deadline: Instant,
 ) -> Result<AppInventory, AdapterError> {
-    list_apps_with(
+    let mut inventory = list_apps_with(
         deadline,
         |app| {
             (agent_desktop_core::app_name_matches(&app.name, name)
-                || (bundle_id.is_none()
-                    && app
-                        .bundle_id
-                        .as_deref()
-                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))))
+                || (bundle_id.is_none() && has_alias(&app.bundle_id, &app.executable, name)))
                 && bundle_id.is_none_or(|bundle| {
                     app.bundle_id
                         .as_deref()
@@ -141,7 +141,30 @@ pub(crate) fn list_apps_scoped_until(
                 })
         },
         false,
-    )
+    )?;
+    let named = |app: &AppInfo| agent_desktop_core::app_name_matches(&app.name, name);
+    if inventory.apps.iter().any(named) {
+        inventory.apps.retain(named);
+    }
+    Ok(inventory)
+}
+
+/// Whether `identifier` is the app's bundle ID or executable name.
+fn has_alias(bundle_id: &Option<String>, executable: &Option<String>, identifier: &str) -> bool {
+    [bundle_id, executable]
+        .into_iter()
+        .flatten()
+        .any(|alias| alias.eq_ignore_ascii_case(identifier))
+}
+
+pub(crate) fn focused_owner_until(deadline: Instant) -> Result<Option<WindowOwner>, AdapterError> {
+    ensure_before_deadline(deadline)?;
+    crate::system::cocoa_runtime::ensure_cocoa_multithreaded()?;
+    let bytes = crate::system::appkit_bridge::focused_snapshot_json()?;
+    ensure_before_deadline(deadline)?;
+    let snapshot = window_owner_snapshot_from_json(&bytes, deadline)?;
+    require_complete(&snapshot.skipped)?;
+    Ok(snapshot.frontmost().cloned())
 }
 
 pub(crate) fn window_owner_snapshot_until(
@@ -213,12 +236,7 @@ fn apps_inventory_from_json_with(
             .map_err(|error| records::with_skipped(error, &bridged.skipped))?;
         let process_instance = match resolve(app.pid) {
             Ok(Some(instance)) => instance,
-            Ok(None) => {
-                return Err(records::with_skipped(
-                    inventory_error("Selected application exited during inventory"),
-                    &bridged.skipped,
-                ));
-            }
+            Ok(None) => continue,
             Err(error)
                 if skip_cross_uid
                     && crate::system::process::process_apps::is_cross_uid_identity_error(
@@ -276,6 +294,7 @@ fn window_owner_snapshot_from_json(
             pid: app.pid,
             name: app.name,
             bundle_id: app.bundle_id,
+            executable: app.executable,
             launch_time,
             activation_policy: app.activation_policy,
         });

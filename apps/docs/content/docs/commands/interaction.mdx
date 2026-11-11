@@ -14,7 +14,7 @@ Every successful ref action returns an action report in `data`. This is a `click
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "click",
   "data": {
@@ -155,7 +155,8 @@ Platform limits: Windows always needs `--headed`. See [Windows](/desktop/platfor
 Inserts text into a text target at its insertion point, then reads the field back.
 
 ```bash
-agent-desktop type <REF> <TEXT> [--timeout-ms MS]
+agent-desktop type <REF> <TEXT> [--timeout-ms MS] [--interval-ms MS]
+agent-desktop type <REF> --stdin [--timeout-ms MS] [--interval-ms MS]
 ```
 
 <table>
@@ -163,10 +164,23 @@ agent-desktop type <REF> <TEXT> [--timeout-ms MS]
     <tr><th>Flag or argument</th><th>Default</th><th>Meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>TEXT</code></td><td>required</td><td>The text, up to 10,000 bytes. A value that starts with a hyphen is accepted.</td></tr>
-    <tr><td><code>--timeout-ms MS</code></td><td><code>5000</code> plus <code>30</code> per character</td><td>Covers resolution, actionability, and delivery. An explicit value wins.</td></tr>
+    <tr><td><code>TEXT</code></td><td>required unless <code>--stdin</code></td><td>The text, up to 10,000 bytes. A value that starts with a hyphen is accepted.</td></tr>
+    <tr><td><code>--timeout-ms MS</code></td><td><code>5000</code> plus <code>30</code> per character</td><td>Covers resolution, actionability, and delivery. An explicit value wins. With <code>--interval-ms</code>, it applies to each keystroke, and <code>0</code> makes each keystroke try once.</td></tr>
+    <tr><td><code>--interval-ms MS</code></td><td>off</td><td>Types one keystroke every <code>MS</code> milliseconds, 1 to 2000, instead of inserting the text at once.</td></tr>
   </tbody>
 </table>
+
+Use `--stdin` with `type` or `set-value` to read text from a pipe or redirected file. Terminal input is rejected. Replace the example ref with one from your snapshot:
+
+```bash
+printf '%s' 'hello' | agent-desktop type @s8f3k2p9:e2 --stdin
+```
+
+The action timeout starts after the input ends; it doesn't limit this wait. Empty input and all line breaks are kept, including a final newline. Use `printf '%s'` to avoid adding one. Input must be valid UTF-8 without NUL bytes (`\0`). The limits are 10,000 bytes for `type` and 128 KiB for `set-value`.
+
+Provide either `--stdin` or a command-line value. To enter the text `--stdin`, put it after `--`: `agent-desktop type @s8f3k2p9:e2 -- --stdin`. Batch uses the JSON `text` or `value` field, which puts the text in process arguments. Run secret steps as separate `--stdin` commands.
+
+`--stdin` keeps text out of process arguments and omits observed `value` fields from JSON results, including `post_state.value`. Other app text and screenshot artifacts aren't redacted.
 
 `type` inserts; it does not replace. After `set-value hello`, `type ' world'` into the same entry produced this, because the insertion point was at the start:
 
@@ -180,6 +194,12 @@ agent-desktop type <REF> <TEXT> [--timeout-ms MS]
 }
 ```
 
+`--interval-ms` types at a steady pace inside one command. A keystroke is one character together with the combining marks, emoji modifiers, and joined characters drawn with it, and CR LF counts as one. The first keystroke runs as a full ref action, and a headed one also focuses the target's window. The rest go to the same element, each taking the interaction lease only while it is delivered, so other agents can act between keystrokes. A headed keystroke is posted only while the target's process and focused element are unchanged, so a burst that loses focus stops with an error. The result adds `keystrokes` and `interval_ms`, and its `post_state` reads the field after the last keystroke. It stays `delivered_verified` only when that read shows the whole text; otherwise it is `delivered_unverified` with `verification_reason` set to `postcondition_mismatch`, `insufficient_evidence` (the text went in part way through the field), or `final_read_failed` (with no `post_state`). A `--wait-for` condition is waited on once, after the last keystroke. A failure after the first keystroke carries `details.typed_keystrokes` and `details.keystrokes` with a `delivered_unverified` disposition, because part of the text landed.
+
+```bash
+agent-desktop type @s8f3k2p9:e2 "hello world" --interval-ms 60
+```
+
 To set a field's whole content, use [`set-value`](#set-value). Keystroke delivery that settles on other text returns `delivered_unverified` with `verification_reason: "postcondition_mismatch"`; read the field with `get` before you write again.
 
 Platform limits: Windows needs `--headed` and returns `POLICY_DENIED` headless; use `set-value` there. See [Windows](/desktop/platforms/windows).
@@ -190,7 +210,10 @@ Writes a value directly through the accessibility value path: text fields, text 
 
 ```bash
 agent-desktop set-value <REF> <VALUE> [--timeout-ms MS]
+agent-desktop set-value <REF> --stdin [--timeout-ms MS]
 ```
+
+For piped text, use `--stdin` with the [input rules above](#type).
 
 ```json
 {

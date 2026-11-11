@@ -1,0 +1,93 @@
+---
+title: macOS VM sandbox
+navTitle: macOS VM
+description: Install the macOS VM provider, create a macOS guest, complete the one-time setup by hand, and clone the configured VM for later sandboxes.
+---
+
+The `macos` provider runs a macOS guest in a virtual machine on an Apple Silicon Mac. Only the first sandbox needs a person at the guest desktop; every sandbox you clone from it starts headless and comes up already set up. Cloning a set-up VM has been tested end to end. Creating the first VM from a macOS image is experimental.
+
+## What this isolates
+
+Each sandbox is a separate VM with its own disk, desktop, and agent-desktop state. That separates the desktop; it does not separate the network or the host.
+
+- Every sandbox on a host shares one virtual network. A guest can reach the host's network services, so treat a guest as code running on your network. Assume guests on one host can reach each other too.
+- Each sandbox has its own SSH host key. Before a start or a clone boots the guest, the provider writes a fresh key into the stopped guest disk and pins the public key, and SSH then refuses any other host. The host must be able to open the guest disk to do this, so a disk it cannot open fails the start or clone. A freshly installed VM has no host key until Remote Login is enabled, so its first setup connection is trust-on-first-use.
+- The SSH key in the sandbox directory is the guest credential. Anyone who can read `<state root>/sandboxes/<name>/id_ed25519` can run commands as the guest user, so protect the state root like your own account.
+- In the guest, Accessibility is granted to `sshd-keygen-wrapper`, so every SSH session as the guest user can drive its desktop.
+- The VM host runs as you with Apple's virtualization entitlement. The hypervisor and the guest OS are Apple's; agent-desktop does not prevent a guest escape.
+
+Use `agent-desktop sandbox` for a desktop you trust at the same level as your own account. Keep one trust level per host, and use a separate machine or a hosted sandbox for code you do not trust.
+
+## Requirements
+
+- An Apple Silicon Mac. On an Intel Mac, `sandbox install macos` reports `unavailable`.
+- macOS 13 or later on the host.
+- Xcode Command Line Tools before the first install, because they provide `swiftc`. Install them with `xcode-select --install`. A VM host that is already built and signed needs no compiler, and an agent-desktop upgrade reuses it unless the VM host's source changed; `sandbox install` then reports `missing`.
+
+## Install the VM host
+
+```bash
+agent-desktop sandbox install macos                    # compile and sign vmhost
+```
+
+The command compiles `vmhost.swift`, signs the binary with the virtualization entitlement, and answers `ready`. When the build or the signature fails, the error names the build log to read.
+
+## Create the first VM
+
+`create` needs exactly one source: an image to install, or a sandbox to clone. Without one it answers `INVALID_ARGS` and does nothing.
+
+```bash
+agent-desktop sandbox create base --provider macos --set ipsw=latest   # download and install macOS
+agent-desktop sandbox status base                                      # repeat until the state changes
+```
+
+`create` answers `working` and installs in the background. With `ipsw=latest` it reads Apple's macOS image catalog, takes the newest version this Mac can install, downloads it into the sandbox directory, checks it against the published SHA-1, installs it, and deletes the download. `status` reports the download size or the install progress. A failed install is `broken`; the reason is in `vm/install.log`.
+
+To install an image you already have, pass its path. A relative path resolves from the directory where you run the command.
+
+```bash
+agent-desktop sandbox create base --provider macos --set ipsw=/path/to/UniversalMac_15.0.ipsw
+```
+
+`--set user=<name>` sets the guest account name recorded for SSH. The default is your user name on the host. It applies only to an install.
+
+## Complete the guest setup
+
+The setup is one session at the guest desktop. The provider records it, so clones never repeat it.
+
+1. Run `agent-desktop sandbox start base`. Because the guest setup is not recorded yet, the VM starts with a window on the host and the reply state is `needs_setup`. Closing that window shuts the VM down; run `start` again to reopen it.
+2. In the guest, open **Terminal** and run `guest-setup.sh` from the shared folder, which the guest mounts at `/Volumes/My Shared Files`. The host writes that folder to `sandboxes/base/vm/share/` and the VM mounts it read-only. The script adds the sandbox key to `~/.ssh/authorized_keys`, installs agent-desktop and `agent-desktop-macos-helper` at `~/.local/bin`, and requests the macOS permissions it needs.
+3. In the guest, open **System Settings > General > Sharing** and turn on **Remote Login**. agent-desktop reaches the guest over SSH.
+4. In the guest, open **System Settings > Privacy & Security > Accessibility** and allow **sshd-keygen-wrapper**. The setup script prints both of these steps when it finishes.
+5. On the host, run `agent-desktop sandbox status base`. Once SSH answers and the guest reports Accessibility as granted, the state becomes `running` and the setup is recorded.
+
+If a set-up sandbox later loses Remote Login or the Accessibility grant, `status` answers `needs_setup` and tells you to stop and start it. The next `start` opens the window again so you can repeat the steps above.
+
+## Clone the configured VM
+
+```bash
+agent-desktop sandbox stop base                                    # a clone needs a stopped source
+agent-desktop sandbox create work --provider macos --set from=base # copy the set-up VM
+agent-desktop sandbox start work                                   # start it headless
+```
+
+A clone copies the disk image, the sandbox key, the setup record, and the guest user name, so it starts without a window and SSH reaches the same account. The source must be stopped and set up; otherwise `create` names its state and stops. `--set from` cannot be combined with `--set ipsw` or `--set user`.
+
+A set-up sandbox starts headless. To watch or use its desktop, start it in a window:
+
+```bash
+agent-desktop sandbox start work --window                          # show the guest desktop on the host
+agent-desktop sandbox start work --window --set title="Review build"
+```
+
+The window's title is the sandbox name unless you pass `--set title=<text>`. Closing the window shuts the VM down. A sandbox that is already running headless must be stopped before it can open a window.
+
+`start` answers `running` only once the guest answers over SSH. Until then it answers `working`; repeat `sandbox status` before `sandbox exec`.
+
+## Limits
+
+- macOS allows two macOS VMs running at once. A third start fails, and `vm/vmhost.log` in the sandbox directory holds the reason.
+- The first setup needs a person in the guest window: agent-desktop cannot turn on Remote Login or grant Accessibility inside the guest.
+- `sandbox exec` copies the host binary and `agent-desktop-macos-helper` into the guest when their SHA-1 hashes differ, so the guest always runs the files from your build.
+- `sandbox exec` waits at most 300 seconds for one guest command.
+- A sandbox keeps a full macOS disk image in `sandboxes/<name>/vm`. `sandbox rm` deletes it.

@@ -56,6 +56,16 @@ exclusivity acknowledgement and calls `run.sh`; it refuses to run unless
 `AGENT_DESKTOP_NATIVE_E2E_RUNNER=1` is set. The `native-e2e.yml` workflow is
 `workflow_dispatch` only.
 
+## Native menu regression
+
+Run this manually on macOS with a built binary. Close TextEdit first. Grant the terminal Accessibility and System Events automation access; if macOS lists `agent-desktop` separately, grant it access too. The script launches TextEdit without activating it, closes its verified blank document, and checks the menubar with zero AX windows. It leaves TextEdit running if another document appears or changes.
+
+This script is not part of `run.sh`.
+
+```bash
+python3 tests/e2e/native-menus.py --bin /absolute/path/to/agent-desktop
+```
+
 ## Exact ref namespaces
 
 Every non-count `find` returns two inseparable values:
@@ -86,8 +96,9 @@ helper that returns a bare `@eN`.
 | `scenarios/error_contract.sh` | Exit code and `error.code` envelopes an agent branches on, `batch` continue/stop/reject semantics |
 | `scenarios/keyboard.sh` | `press` key combos observed through the fixture's own text readout, blocked-combo and unknown-modifier refusals |
 | `scenarios/trace_performance.sh` | Trace artifacts, redaction, timings, cleanup |
-| `scenarios/ref_churn.sh` | `STALE_REF` after the UI really changes, on a dedicated fixture process (`AGENT_DESKTOP_FIXTURE_REF_CHURN=1`), with and without the opt-in command host |
+| `scenarios/ref_churn.sh` | `STALE_REF` after the UI really changes, on a dedicated fixture process (`AGENT_DESKTOP_FIXTURE_REF_CHURN=1`) |
 | `scenarios/notifications.sh` | Real Notification Center lifecycle |
+| `scenarios/os_surfaces.sh` | Dock launch, Control Center panel and volume slider, `--app` by executable name |
 | `permission-contract.sh` | Deterministic AE5 mapping tests without mutating TCC |
 | `electron-live.sh`, `electron_metrics*.py` | Opt-in installed Electron/Chromium app measurement |
 | `json_tool.py`, `bounded_process.py`, `guard-command.sh` | JSON field extraction and the timeout/output-capped, process-group-isolated command runner |

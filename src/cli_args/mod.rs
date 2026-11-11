@@ -14,10 +14,12 @@ pub(crate) mod drag_target;
 pub(crate) mod interaction;
 pub(crate) mod mouse_wheel;
 pub(crate) mod notifications;
+pub(crate) mod sandbox;
 pub(crate) mod session;
 pub(crate) mod skills;
 mod snapshot;
 pub(crate) mod snapshot_tree;
+pub(crate) mod stdin;
 pub(crate) mod system;
 pub(crate) mod trace;
 

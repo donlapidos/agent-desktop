@@ -51,7 +51,7 @@ agent-desktop permissions [--request] [--guide]
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "permissions",
   "data": {
@@ -69,7 +69,7 @@ Each state is `granted`, `denied` (with a `suggestion`), `not_required`, or `unk
 Prints the version, CPU architecture, and OS. It takes no flags.
 
 ```json
-{ "version": "2.5", "ok": true, "command": "version", "data": { "os": "linux", "target": "x86_64", "version": "1.0.1" } }
+{ "version": "2.6", "ok": true, "command": "version", "data": { "os": "linux", "target": "x86_64", "version": "1.0.1" } }
 ```
 
 The envelope's `version` is the JSON contract version; `data.version` is the release.
@@ -115,7 +115,7 @@ agent-desktop session gc [--older-than SECONDS] [--ended]
 
 ## cursor-overlay
 
-Configures the presentation-only cursor overlay for a session. The overlay draws an agent cursor, a click ripple, and an element highlight, and never changes what an action does. It needs an active session, and it cannot run inside a [batch](/desktop/commands/batch).
+Configures the presentation-only cursor overlay for a session. The overlay draws an agent cursor, a click ripple, and an element highlight, and never changes what an action does. On macOS and Windows, after `type` or `set-value` lands, it also draws a caret at the field's insertion point, and moves it after a `press` that moves the insertion point. It needs an active session, and it cannot run inside a [batch](/desktop/commands/batch).
 
 ```bash
 agent-desktop --session "$AGENT_DESKTOP_SESSION" cursor-overlay enable [STYLE FLAGS]
@@ -128,8 +128,9 @@ agent-desktop --session "$AGENT_DESKTOP_SESSION" cursor-overlay disable
   </thead>
   <tbody>
     <tr><td><code>--multi-agent</code></td><td>off</td><td>Require an agent id for desktop actions. Rejected together with <code>--agent-id</code>.</td></tr>
-    <tr><td><code>--label TEXT</code>, <code>--max-words N</code></td><td>none, <code>6</code></td><td>Intent text beside the cursor, limited to 1 to 12 words.</td></tr>
-    <tr><td><code>--fill HEX</code>, <code>--rim HEX</code>, <code>--accent HEX</code></td><td><code>#FFFFFF</code>, <code>#111318</code>, <code>#4299FF</code></td><td>Cursor body, outline, and ripple colors.</td></tr>
+    <tr><td><code>--label TEXT</code>, <code>--max-words N</code></td><td>none, <code>6</code></td><td>Intent text beside the cursor, limited to 1 to 12 words, drawn as a black pill sized to the text.</td></tr>
+    <tr><td><code>--accent HEX</code></td><td><code>#4299FF</code></td><td>Cursor body, ripple, element outline and caret color.</td></tr>
+    <tr><td><code>--fill HEX</code>, <code>--rim HEX</code></td><td>the accent, <code>#111318</code></td><td>Cursor body and outline colors. <code>--fill</code> sets a body color other than the accent.</td></tr>
     <tr><td><code>--size N</code></td><td><code>1.0</code></td><td>Size multiplier, 0.5 to 4.0.</td></tr>
     <tr><td><code>--no-ripple</code>, <code>--no-highlight</code></td><td>off</td><td>Turn off the click ripple or the element outline.</td></tr>
     <tr><td><code>--image PATH</code>, <code>--hotspot X,Y</code></td><td>built-in arrow</td><td>Draw the cursor from a PNG (at most 2 MiB and 1024 pixels per side) with its click point.</td></tr>
@@ -143,7 +144,7 @@ agent-desktop --session "$AGENT_DESKTOP_SESSION" cursor-overlay disable
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "cursor-overlay",
   "data": {
@@ -151,7 +152,7 @@ agent-desktop --session "$AGENT_DESKTOP_SESSION" cursor-overlay disable
     "cursor_overlay": {
       "enabled": true,
       "max_words": 6,
-      "style": { "accent": "#4299FF", "fill": "#FFFFFF", "highlight": true, "rim": "#111318", "ripple": true, "size": 1.0 }
+      "style": { "accent": "#4299FF", "highlight": true, "rim": "#111318", "ripple": true, "size": 1.0 }
     },
     "next": "export AGENT_DESKTOP_SESSION=run-1793353372413-23159-0",
     "rendered": true,
@@ -187,7 +188,7 @@ agent-desktop --session "$AGENT_DESKTOP_SESSION" trace export [--out PATH] [--li
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "trace",
   "data": {

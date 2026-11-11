@@ -45,7 +45,7 @@ The port exists only for a fresh process. `launch` never quits a running app for
 
 Handoff: agent-desktop never talks to the port itself. Check `command -v agent-browser`. If it exists, run `agent-browser connect <port>` and use its snapshot, click and type workflow (`agent-browser skills get electron` has the guide). Playwright, Puppeteer and other CDP clients also work. Do not write raw CDP by hand or call app-internal APIs. If no client exists, ask the user to run `npm install -g agent-browser`, or stay on the accessibility path.
 
-Keep these on agent-desktop even with CDP connected: the native menu bar, file dialogs and sheets, window management, notifications, screenshots, and any app you did not launch. While the port is open, any local process of the same user can control the app's web contents. Request `--cdp` only for the step that needs it. `close-app` ends the exposure.
+Keep these on agent-desktop even with CDP connected: the native menu bar, file dialogs and sheets, window management, notifications, screenshots, and any app you did not launch. While the port is open, any local process can control the app's web contents, including processes of other accounts on the same machine, because the DevTools port has no authentication. Request `--cdp` only for the step that needs it. `close-app` ends the exposure.
 
 ## close-app
 
@@ -79,7 +79,7 @@ agent-desktop minimize --app "TextEdit"   # maximize, restore likewise
 ```
 
 - `list-windows` returns `{ id, title, app_name, pid, bounds, is_focused, accessible }`. Use a `w-<id>` with `--window-id` when an app has several windows.
-- `accessible: false` means semantic commands cannot reach that window. Targeting it returns `ACTION_NOT_SUPPORTED` with `kind: "window_without_accessibility_element"`. It still accepts screenshots and coordinate input. Choose another window.
+- `accessible: false` means semantic commands cannot reach that window. Targeting it returns `ACTION_NOT_SUPPORTED` with `kind: "window_without_accessibility_element"`. It still accepts screenshots and coordinate input. Choose another window. Wait polling treats this error as transient. In particular, `--wait-for-gone` does not count it as absence; it keeps polling until the window disappears from the inventory or the wait times out.
 - `focus-window` needs at least one identifier. It confirms the OS reports that window as focused. Otherwise it returns `ACTION_FAILED`.
 - `restore` undoes a minimize and returns the window to its earlier placement. It does not promise to un-maximize.
 
@@ -101,6 +101,7 @@ Commands: `list-notifications`, `dismiss-notification`, `dismiss-all-notificatio
 agent-desktop clipboard-get --format auto
 agent-desktop clipboard-get --format image --out /tmp/clip.png
 agent-desktop clipboard-set "Hello"
+printf '%s' 'Hello' | agent-desktop clipboard-set --stdin
 agent-desktop clipboard-set --image /tmp/a.png
 agent-desktop clipboard-set --file-url /tmp/a.txt --file-url /tmp/b.txt
 agent-desktop clipboard-clear
@@ -109,6 +110,9 @@ agent-desktop clipboard-clear
 - Formats: `text` (default), `auto` (file references, then image, then text), `image`, `file-urls`. Output is `{ "type": "text", "text": ... }`, `{ "type": "file_urls", ... }`, or `{ "type": "image", "path", "width", "height" }`. When the clipboard has nothing in that form: `{ "type": "<format>", "found": false }`.
 - Image bytes go to `--out`, or to a private file under the active session directory (or `~/.agent-desktop/tmp`).
 - `clipboard-set` writes one representation per call. `--file-url` and `--image` win over the positional text. Every `--file-url` path must exist, or `INVALID_ARGS`.
+- Use `clipboard-set --stdin` to read up to 128 KiB from a pipe or redirected file without putting it in process arguments. Terminal input is rejected. It cannot be combined with a command-line value, `--image`, or `--file-url`.
+- The command waits until the input ends. Empty input and all line breaks are kept, including a final newline. Use `printf '%s'` to avoid adding one. Input must be valid UTF-8 without NUL bytes (`\0`).
+- Batch uses the JSON `text` field, which puts the text in process arguments. Run secret steps as separate `--stdin` commands. To copy the text `--stdin`, use `agent-desktop clipboard-set -- --stdin`.
 - A write that loses clipboard ownership mid-way reports `delivered_unverified`, not a false success.
 
 ## wait
@@ -163,6 +167,8 @@ Batch runs entries in order in one process. It is not a transaction. Entries use
 
 Wait entries use flat JSON keys matching the wait argument fields. For event waits, use `event` and optional `app`, `timeout` (milliseconds; defaults to 30000), `window`, and `window_id`. For example, the batch above waits up to five seconds for a new TextEdit window. `window` and `window_id` narrow only window lifecycle events (`window-opened`, `window-closed`, `focus-changed`); they do not scope text waits. In an action-then-event sequence, the batch captures the event baseline before the action, and does not start the action if that baseline read fails.
 
+Keys are the command's own field names, so a positional argument is named after itself rather than after its placeholder: `press COMBO` is `{"combo":"cmd+s"}`, `click REF` is `{"ref_id":"@s8f3k2p9:e1"}`, and `type REF TEXT` takes `ref_id` and `text`. A flag drops its leading `--` and writes `-` as `_`, so `--timeout-ms` is `timeout_ms`.
+
 ## Sessions and traces
 
 A session is an on-disk container under `<state root>/sessions/<id>/` with a manifest, snapshot refmaps and, when tracing is on, a `trace/` directory. The state root is `~/.agent-desktop`. `AGENT_DESKTOP_HOME` relocates it. It must be an absolute path, or the command fails with `INVALID_ARGS`. `status` reports it as `state_root`.
@@ -193,17 +199,30 @@ On macOS:
 
 On macOS and Windows:
 
+- The label is a black pill with white text in the system font (SF Pro on macOS, Segoe UI on Windows), sized to the text and set below and right of the cursor's tip. A label wider than 360 pt is cut with an ellipsis, and an empty label shows no pill.
+- `--accent` colours the cursor body as well as the ripple, the element outline and the caret; `--fill` gives the body a different colour.
 - `--image` and `--pointer-image` take a PNG of at most 2 MiB and 1024 pixels per side, drawn at `--size` with the hotspot on the point the cursor targets. Relative paths resolve at `enable`. `--fill` and `--rim` conflict with `--image`. A missing or invalid image falls back to the arrow. With `--image`, `enable` draws no greeting.
 - The pointer image shows on arrival at a pressable control. Text fields keep the arrow.
 
 Windows accepts the motion settings but keeps its built-in motion.
 
+On macOS and Windows, after `type` or `set-value` lands, the overlay draws the agent's caret, a thin bar in the accent color, at the field's insertion point and leaves the element outline off. `type --interval-ms` moves the caret with each keystroke while the cursor stays put. A field that reports no insertion point keeps the outline and gets no caret. The caret goes away when the cursor sets off for somewhere else, and stays for another `type` into the same field. After `press` delivers, a caret that is showing moves to the focused field's new insertion point, or disappears when the focused element has none. `type` plays the click ripple only when its field does not already have keyboard focus.
+
 Multi-agent cursors (macOS and Windows): start with `session start --cursor --multi-agent`, then pass the returned session id to every subagent.
 
 - Desktop UI actions then require an agent id: global `--agent-id <id>` or `AGENT_DESKTOP_AGENT_ID`. The flag wins. Observations, clipboard commands and session administration do not need one.
 - An id has 1 to 64 letters, digits, `-` or `_`. It is scoped by session. Each distinct id gets its own cursor, and a reused id reuses its cursor.
+- A headless action moves its cursor before it takes the interaction lease, so several agents' cursors travel at the same time. The actions still take turns, and commands that draw the same cursor take turns from its travel to its click effect.
 - `--agent-id <id> cursor-overlay enable` saves a style for that agent. Do not add `--multi-agent` to it.
 - `cursor-overlay disable` and `session end` stop every cursor in the session, even when you pass an agent id.
+
+## Sandboxes
+
+`agent-desktop sandbox install` lists the providers this build includes, and `agent-desktop sandbox list` lists the sandboxes with `name`, `state`, `message`, and `next`. A single sandbox command also returns its `provider`. A build can include no providers: `sandbox install` then returns an empty list, and a command that names a provider fails with `INVALID_ARGS`.
+
+A sandbox whose record is missing or malformed, or names a provider this build does not include, appears in `sandbox list` with `state: "broken"`, and every command on it returns `INVALID_ARGS`. `next` and `suggestion` name the directory to delete once nothing in it is still running. A sandbox whose status check failed is also `broken`; follow its `next`, which is not always a removal.
+
+`sandbox start <name> --window` shows the sandbox's desktop in a window on the host instead of running it headless, and `--set key=value` passes the provider an option for that start. `create`, `start`, `stop` and `rm` on one sandbox run one at a time; a second one fails with `ACTION_FAILED`. `sandbox exec` ends a guest command after 300 seconds with `TIMEOUT`. The host's session and agent id, from flags or from `AGENT_DESKTOP_SESSION` and `AGENT_DESKTOP_AGENT_ID`, do not apply in the guest; pass `--session` after `--`.
 
 ## status, permissions, version
 

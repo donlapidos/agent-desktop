@@ -189,6 +189,13 @@ pub(crate) struct ClipboardSetArgs {
     )]
     #[serde(default)]
     pub file_url: Vec<String>,
+    #[arg(
+        long,
+        conflicts_with_all = ["text", "image", "file_url"],
+        help = "Read up to 128 KiB of UTF-8 text from a pipe or file"
+    )]
+    #[serde(skip)]
+    pub stdin: bool,
 }
 
 /// `event`/`window_id` flatten in as a sibling of `mode`/`predicate` here
@@ -306,7 +313,7 @@ pub(crate) struct OpenSystemSurfaceArgs {
     #[arg(
         long,
         value_enum,
-        help = "Shell surface to open: start-menu, taskbar, system-tray, system-tray-overflow, action-center"
+        help = "Shell surface to open: start-menu, taskbar, system-tray, system-tray-overflow, action-center, dock, menu-bar-extras"
     )]
     pub surface: Surface,
 }

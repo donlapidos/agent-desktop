@@ -44,6 +44,27 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
 
 
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install docs dependencies
+        working-directory: apps/docs
+        run: npx --yes pnpm@11.1.3 install --frozen-lockfile
+      - name: Build docs
+        working-directory: apps/docs
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: npx --yes pnpm@11.1.3 build
+
+
   msrv:
     name: Rust 1.89 MSRV
     runs-on: ubuntu-latest
@@ -132,6 +153,25 @@ jobs:
         run: |
           clang -fobjc-arc -fblocks -Wall -Wextra -Werror -framework AppKit tests/native/appkit_workspace_name_test.m -o "$RUNNER_TEMP/appkit-workspace-name-test"
           "$RUNNER_TEMP/appkit-workspace-name-test"
+
+      - name: macOS VM host compiles, signs, and refuses a missing command
+        run: |
+          VM_HOST_DIR="$RUNNER_TEMP/macos"
+          mkdir -p "$VM_HOST_DIR"
+          xcrun swiftc -O providers/macos/vmhost.swift -o "$VM_HOST_DIR/vmhost"
+          codesign -f -s - --entitlements providers/macos/vm.entitlements "$VM_HOST_DIR/vmhost"
+          codesign -d --entitlements - "$VM_HOST_DIR/vmhost" 2>&1 | grep -q com.apple.security.virtualization
+          set +e
+          "$VM_HOST_DIR/vmhost" > "$VM_HOST_DIR/usage.json" 2>&1
+          USAGE_STATUS=$?
+          set -e
+          test "$USAGE_STATUS" -eq 1
+          python3 - "$VM_HOST_DIR/usage.json" <<'PY'
+          import json, sys
+          reply = json.load(open(sys.argv[1]))
+          assert reply["ok"] is False, "vmhost accepted a missing command"
+          assert "install" in reply["message"] and "clone" in reply["message"], reply["message"]
+          PY
 
       - name: Locator benchmark adapter contract
         run: scripts/cargo-test-isolated-home.sh test --locked -p agent-desktop-core --example locator_benchmark

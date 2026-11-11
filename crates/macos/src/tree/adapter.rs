@@ -6,6 +6,26 @@ use agent_desktop_core::{
 };
 
 impl ObservationOps for MacOSAdapter {
+    fn is_application_surface(&self, surface: agent_desktop_core::SnapshotSurface) -> bool {
+        matches!(
+            surface,
+            agent_desktop_core::SnapshotSurface::Menu
+                | agent_desktop_core::SnapshotSurface::Menubar
+        )
+    }
+
+    fn is_nonspatial_target_with_deadline(
+        &self,
+        handle: &NativeHandle,
+        deadline: Deadline,
+    ) -> Result<bool, AdapterError> {
+        crate::tree::native_menu::is_native_menu(ax_element(handle)?, deadline)
+    }
+
+    fn focused_app(&self, deadline: Deadline) -> Result<Option<AppInfo>, AdapterError> {
+        crate::system::focus::focused_app(deadline)
+    }
+
     fn observe_tree(
         &self,
         root: ObservationRoot<'_>,
@@ -33,6 +53,10 @@ impl ObservationOps for MacOSAdapter {
         deadline: Deadline,
     ) -> Result<NativeHandle, AdapterError> {
         crate::tree::resolve::resolve_element_with_deadline(entry, deadline)
+    }
+
+    fn retains_element_tokens(&self) -> bool {
+        crate::tree::resolve::retained::tokens_available()
     }
 
     fn resolve_locator_anchor(
@@ -82,18 +106,27 @@ impl ObservationOps for MacOSAdapter {
         )
     }
 
+    fn resolve_shell_surface(
+        &self,
+        surface: agent_desktop_core::SnapshotSurface,
+        deadline: Deadline,
+    ) -> Result<WindowInfo, AdapterError> {
+        crate::tree::shell_surface::resolve_surface(
+            surface,
+            crate::tree::locator_deadline::from_operation(deadline)?,
+        )
+    }
+
     fn list_surfaces(
         &self,
         process: agent_desktop_core::ProcessIdentity,
         deadline: Deadline,
     ) -> Result<Vec<SurfaceInfo>, AdapterError> {
         let identity = crate::system::process::process_identity::require_core(&process)?;
-        let surfaces = crate::tree::surface_inventory::list_surfaces_for_pid(
-            identity.pid(),
+        crate::tree::surface_inventory::list_surfaces_for_process(
+            identity,
             crate::tree::locator_deadline::from_operation(deadline)?,
-        )?;
-        crate::system::process::process_identity::require_core(&process)?;
-        Ok(surfaces)
+        )
     }
 
     fn hit_test(
@@ -167,6 +200,34 @@ impl ObservationOps for MacOSAdapter {
         }
         #[cfg(not(target_os = "macos"))]
         Err(AdapterError::not_supported("get_live_actions"))
+    }
+
+    fn get_insertion_caret(
+        &self,
+        handle: &NativeHandle,
+        deadline: Deadline,
+    ) -> Result<Option<agent_desktop_core::Rect>, AdapterError> {
+        Ok(crate::tree::properties::text_insertion::insertion_caret(
+            ax_element(handle)?,
+            deadline,
+        ))
+    }
+
+    fn get_focused_insertion_caret(
+        &self,
+        process: Option<agent_desktop_core::ProcessId>,
+        deadline: Deadline,
+    ) -> Result<Option<agent_desktop_core::Rect>, AdapterError> {
+        let pid = process
+            .map(|process| i32::try_from(process.get()))
+            .transpose()
+            .map_err(|_| {
+                AdapterError::new(
+                    agent_desktop_core::ErrorCode::InvalidArgs,
+                    "Process id is out of range",
+                )
+            })?;
+        crate::tree::properties::text_insertion::focused_insertion_caret(pid, deadline)
     }
 
     fn get_live_element(

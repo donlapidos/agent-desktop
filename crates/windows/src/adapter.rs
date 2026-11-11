@@ -80,16 +80,6 @@ impl ObservationOps for WindowsAdapter {
         .into_accessibility_tree()
     }
 
-    /// Re-resolves a stored ref to a live element, fail-closed - the
-    /// drill-down root `snapshot --root @ref` needs.
-    fn resolve_element_strict(
-        &self,
-        entry: &RefEntry,
-        deadline: Deadline,
-    ) -> Result<NativeHandle, AdapterError> {
-        crate::tree::resolve::resolve_element_strict(entry, deadline)
-    }
-
     fn resolve_locator_anchor(
         &self,
         entry: &RefEntry,
@@ -122,6 +112,22 @@ impl ObservationOps for WindowsAdapter {
         deadline: Deadline,
     ) -> Result<Option<std::ops::Range<usize>>, AdapterError> {
         crate::tree::text_selection::get_text_selection(handle, deadline)
+    }
+
+    fn get_insertion_caret(
+        &self,
+        handle: &NativeHandle,
+        deadline: Deadline,
+    ) -> Result<Option<agent_desktop_core::Rect>, AdapterError> {
+        crate::tree::text_insertion::get_insertion_caret(handle, deadline)
+    }
+
+    fn get_focused_insertion_caret(
+        &self,
+        process: Option<agent_desktop_core::ProcessId>,
+        deadline: Deadline,
+    ) -> Result<Option<agent_desktop_core::Rect>, AdapterError> {
+        crate::tree::text_insertion::get_focused_insertion_caret(process, deadline)
     }
 
     fn get_live_state(

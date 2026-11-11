@@ -7,6 +7,15 @@ accessibility trees and returns structured JSON with ref-based element ids. The 
 calling agent. It never embeds an LLM and has no GUI or interactive prompt. It does not automate web pages (use
 agent-browser). It cannot see UIs that expose no accessibility tree.
 
+## Critical: fixes must be application-agnostic
+
+Every fix must work through the platform's shared accessibility and lifecycle contracts across applications.
+Never add app-specific branches keyed by app names, bundle IDs, executables, window titles, or a known app's UI layout.
+Use observed capabilities, roles, ownership, and process identity in the shared platform adapter. Preserve safe failure
+when the platform cannot establish the required identity or capability. Verify changed behavior against multiple real
+apps and relevant UI toolkits; one app passing does not establish platform-wide correctness. App-specific names belong
+in examples and verification scenarios, never in runtime special cases.
+
 ## Commands
 
 Each platform adapter compiles only on its own OS and the workspace names all three, so an unscoped `cargo build`,
@@ -90,8 +99,8 @@ crates/macos/    agent-desktop-macos: AX API
 crates/windows/  agent-desktop-windows: UI Automation
 crates/linux/    agent-desktop-linux: AT-SPI
 crates/ffi/      agent-desktop-ffi: cdylib and the committed C header include/agent_desktop.h
-src/             agent-desktop binary: cli/, cli_args/, dispatch/, batch/, command_policy/, command_host/,
-                 diagnostic/, visual_debug/
+src/             agent-desktop binary: cli/, cli_args/, dispatch/, batch/, command_policy/,
+                 diagnostic/, visual_debug/, mcp/
 skills/          agent skills, compiled into the binary
 tests/           golden fixtures, E2E harness per OS, FFI smoke tests
 probes/          raw platform measurements; FINDINGS.md rows are citable evidence
@@ -116,6 +125,12 @@ apps/docs/       Geistdocs site served at agent-browser.dev/desktop as a Vercel 
 **Dispatch.** `dispatch()` in `src/dispatch/mod.rs` is a direct `match` that calls each command's `execute()` in
 `crates/core/src/commands/`. There is no command trait or registry. Batch is not a second dispatcher: it deserializes
 JSON entries into the same `Commands` enum, runs the same `CommandPolicy` preflight and calls the same `dispatch()`.
+
+**MCP.** `agent-desktop mcp` (`src/mcp/`) is not a second command surface. It reads the clap command tree at runtime:
+each leaf command is one tool, its schema comes from the command's clap arguments and help, and a call rebuilds the
+argv and runs this binary as a child process. A command added to or removed from `Commands` appears in or disappears
+from the MCP tool list with no MCP change. `mcp` itself is attached to the root command in `main.rs`, outside
+`Commands`, so it is never a tool, a batch entry or a counted command.
 
 **Adding a command.**
 1. Create `crates/core/src/commands/<name>.rs` with an `execute()` function, its tests in `<name>_tests.rs`, and
@@ -182,7 +197,8 @@ remain the transitive check.
   its delivery disposition.
 - Codes: `PERM_DENIED`, `ELEMENT_NOT_FOUND`, `APP_NOT_FOUND`, `ACTION_FAILED`, `ACTION_NOT_SUPPORTED`, `STALE_REF`,
   `AMBIGUOUS_TARGET`, `WINDOW_NOT_FOUND`, `PLATFORM_NOT_SUPPORTED`, `TIMEOUT`, `INVALID_ARGS`,
-  `NOTIFICATION_NOT_FOUND`, `SNAPSHOT_NOT_FOUND`, `POLICY_DENIED`, `APP_UNRESPONSIVE`, `INTERNAL`.
+  `NOTIFICATION_NOT_FOUND`, `SNAPSHOT_NOT_FOUND`, `SANDBOX_NOT_FOUND`, `POLICY_DENIED`, `APP_UNRESPONSIVE`,
+  `INTERNAL`.
 - Exit codes: `0` success, `1` structured error, `2` argument or parse error.
 
 ## Output contract
@@ -190,12 +206,12 @@ remain the transitive check.
 Every command prints one envelope. `docs/json-output.md` holds the full contract.
 
 ```json
-{ "version": "2.5", "ok": true, "command": "snapshot",
+{ "version": "2.6", "ok": true, "command": "snapshot",
   "data": { "app": "Finder", "snapshot_id": "s8f3k2p9", "ref_count": 14, "complete": true, "tree": { } } }
 ```
 
 ```json
-{ "version": "2.5", "ok": false, "command": "click",
+{ "version": "2.6", "ok": false, "command": "click",
   "error": { "code": "STALE_REF", "message": "...", "suggestion": "...",
              "recovery": { "strategy": "refresh_snapshot_then_retry_original", "retryable": true,
                            "requires_fresh_snapshot": true },
@@ -203,6 +219,7 @@ Every command prints one envelope. `docs/json-output.md` holds the full contract
 ```
 
 - Omit `None` fields and empty arrays. Compact mode omits bounds. `ref_count` and `tree` live inside `data`.
+- Snapshot `data.window` is present for window-owned surfaces. macOS `menu` and `menubar` snapshots are application-owned and omit it.
 - Every snapshot carries `data.complete`. A snapshot that runs out of observation budget succeeds with
   `"complete": false`, `"truncated": true`, `"nodes_observed"` and the tree it saw; each cut node carries
   `"subtree_truncated": true`. A `--root` drill-down returns `TIMEOUT` instead of a partial tree.
@@ -221,9 +238,11 @@ Every command prints one envelope. `docs/json-output.md` holds the full contract
 - An element gets a ref when its role is interactive (`INTERACTIVE_ROLES` in `crates/core/src/tree/roles.rs`) or it
   advertises a primary action. `SetFocus`, `RightClick` and `ScrollTo` alone do not qualify, because web runtimes
   advertise them on nearly every node.
-- Actions re-identify the element strictly from `RefEntry` evidence: pid, role, path and source surface, stable text
-  identity and a bounds hash. Control values are volatile and never identity. A mismatch returns `STALE_REF`; several
-  live candidates return `AMBIGUOUS_TARGET`.
+- Actions re-identify the element one of two ways. A genuine element token resolves through the adapter, which owns
+  re-identification on that platform (macOS). Every other ref resolves from its capture proof: role plus every
+  recorded stable field, that is native id, stable name and description, counted over one complete observation of the
+  window it was captured from. A ref that was not unique at capture is refused before the application is read. Zero
+  live matches is `STALE_REF`, two or more is `AMBIGUOUS_TARGET`, and control values and bounds are never identity.
 - All state lives under one root, `~/.agent-desktop` by default. `AGENT_DESKTOP_HOME` relocates it
   (`crates/core/src/storage/state_root.rs`). Refmaps live at `snapshots/<snapshot_id>/refmap.json`, capped at 1 MB each; the
   store keeps the newest 128 snapshots per namespace and prunes to 96. Command code goes through `RefStore`, which
@@ -251,11 +270,11 @@ Every command prints one envelope. `docs/json-output.md` holds the full contract
 
 ## Command surface
 
-60 commands spanning App/Window, Observation, Interaction, Scroll, Keyboard, Mouse, Notifications, Clipboard, Wait,
-System (including `session`, `trace`, `skills`) and Batch. 56 of the 60 command names are operational on macOS; the
-four held-input names (`key-down`, `key-up`, `mouse-down`, `mouse-up`) fail closed. Windows and Linux expose the same
-command names. Each platform's limits are in its skill (`skills/agent-desktop-macos/`, `skills/agent-desktop-windows/`,
-`skills/agent-desktop-linux/`).
+61 commands spanning App/Window, Observation, Interaction, Scroll, Keyboard, Mouse, Notifications, Clipboard, Wait,
+System (including `session`, `trace`, `skills`), Sandboxes (`sandbox`) and Batch.
+57 of the 61 command names are operational on macOS; the four held-input names (`key-down`, `key-up`, `mouse-down`,
+`mouse-up`) fail closed. Windows and Linux expose the same command names. Each platform's limits are in its skill
+(`skills/agent-desktop-macos/`, `skills/agent-desktop-windows/`, `skills/agent-desktop-linux/`).
 
 ## Definition of done
 

@@ -1,6 +1,6 @@
 use agent_desktop_core::{
     AdapterError, CURSOR_HIGHLIGHT_HOLD_MS, CursorImage, CursorOverlayInstruction,
-    CursorOverlayStyle, CursorPhase, CursorPose, ErrorCode, Point, Rect,
+    CursorOverlayStyle, CursorPhase, CursorPose, ErrorCode, LabelPill, Point, Rect, place_label,
 };
 use std::ffi::{CString, c_char};
 
@@ -31,8 +31,7 @@ struct NativeCursorFrame {
 struct NativeRenderConfig {
     frame_seconds: f64,
     label: *const c_char,
-    bubble_x: f64,
-    bubble_y: f64,
+    bubble: [f64; 4],
     target: [f64; 4],
     highlight_seconds: f64,
     flags: u8,
@@ -57,10 +56,57 @@ unsafe extern "C" {
         hotspot_y: f64,
     ) -> bool;
     fn agent_desktop_cursor_overlay_idle();
+    fn agent_desktop_cursor_overlay_label_width(label: *const c_char) -> f64;
+    fn agent_desktop_cursor_overlay_caret(x: f64, y: f64, width: f64, height: f64);
+    fn agent_desktop_cursor_overlay_caret_clear();
+    fn agent_desktop_cursor_overlay_caret_follow(
+        present: bool,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    );
     fn agent_desktop_cursor_overlay_hide();
     fn agent_desktop_cursor_overlay_rest();
     fn agent_desktop_cursor_overlay_show();
     fn agent_desktop_cursor_overlay_stop();
+}
+
+pub(super) fn is_caret(instruction: &CursorOverlayInstruction) -> bool {
+    matches!(
+        instruction.phase(),
+        CursorPhase::Caret | CursorPhase::CaretFollow
+    )
+}
+
+/// Draws the caret at the instruction's target. `CaretFollow` only moves a
+/// caret already showing, and hides it when there is no target.
+pub(super) fn caret(instruction: &CursorOverlayInstruction) {
+    let follow = instruction.phase() == CursorPhase::CaretFollow;
+    match instruction.target() {
+        Some(at) if follow => unsafe {
+            agent_desktop_cursor_overlay_caret_follow(true, at.x, at.y, at.width, at.height)
+        },
+        Some(at) => unsafe { agent_desktop_cursor_overlay_caret(at.x, at.y, at.width, at.height) },
+        None if follow => unsafe {
+            agent_desktop_cursor_overlay_caret_follow(false, 0.0, 0.0, 0.0, 0.0)
+        },
+        None => {}
+    }
+}
+
+/// Draws a caret instruction and reports that it was one. Any other
+/// instruction clears the caret when it sets the cursor off from `at` for
+/// somewhere else; see `CursorOverlayInstruction::departs_from`.
+pub(super) fn apply_caret(instruction: &CursorOverlayInstruction, at: Option<&Point>) -> bool {
+    if is_caret(instruction) {
+        caret(instruction);
+        return true;
+    }
+    if instruction.departs_from(at) {
+        unsafe { agent_desktop_cursor_overlay_caret_clear() }
+    }
+    false
 }
 
 pub(super) fn begin_drag(from: &Point, trail: bool) {
@@ -114,7 +160,7 @@ pub(super) fn run(
     fps: u32,
     instruction: &CursorOverlayInstruction,
     reduce_motion: bool,
-    bubble: &Rect,
+    screen: &Rect,
 ) -> Result<(), AdapterError> {
     let frames = poses
         .iter()
@@ -129,6 +175,20 @@ pub(super) fn run(
         .map(|value| CString::new(value.replace('\0', " ")))
         .transpose()
         .map_err(|_| AdapterError::internal("Cursor overlay label encoding failed"))?;
+    let anchor = poses
+        .last()
+        .map_or(instruction.destination(), |pose| &pose.point);
+    let bubble = label
+        .as_ref()
+        .zip(instruction.label())
+        .and_then(|(encoded, text)| {
+            let width = unsafe { agent_desktop_cursor_overlay_label_width(encoded.as_ptr()) };
+            LabelPill::for_label(text, width, 1.0)
+        })
+        .map_or([0.0; 4], |pill| {
+            let placed = place_label(anchor, pill.size(), screen);
+            [placed.x, placed.y, placed.width, placed.height]
+        });
     let mut flags = 0;
     if reduce_motion {
         flags |= REDUCE_MOTION;
@@ -145,8 +205,7 @@ pub(super) fn run(
         label: label
             .as_ref()
             .map_or(std::ptr::null(), |value| value.as_ptr()),
-        bubble_x: bubble.x,
-        bubble_y: bubble.y,
+        bubble,
         target: target.unwrap_or_default(),
         highlight_seconds: CURSOR_HIGHLIGHT_HOLD_MS as f64 / 1_000.0,
         flags,
@@ -178,6 +237,7 @@ pub(super) fn apply_style(style: &CursorOverlayStyle, image_changed: bool) {
 fn pointer_flags(instruction: &CursorOverlayInstruction) -> u8 {
     match instruction.phase() {
         CursorPhase::Effect => ARROW_AFTER_EFFECT,
+        CursorPhase::Caret | CursorPhase::CaretFollow => 0,
         CursorPhase::Drag => ARROW_ON_DEPARTURE,
         CursorPhase::Travel if instruction.is_pointer() => ARROW_ON_DEPARTURE | POINT_ON_ARRIVAL,
         CursorPhase::Travel => ARROW_ON_DEPARTURE,

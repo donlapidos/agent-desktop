@@ -7,9 +7,11 @@ use crate::{
     ref_action::ref_action_wait_context::RefActionWaitContext,
     refs::RefEntry,
     refs::refs_store::RefStore,
-    system::window_lookup,
 };
 use serde_json::{Value, json};
+
+#[path = "post_action_observation.rs"]
+mod post_action_observation;
 
 pub(crate) use crate::system::app_lookup::{
     process_identity, resolve_app, revalidate_app_for_mutation,
@@ -51,31 +53,35 @@ fn resolve_ref_within_deadline(
     context: &CommandContext,
 ) -> Result<(RefEntry, crate::adapter::NativeHandle), AppError> {
     let entry = load_ref_entry(ref_id, context)?;
-    let handle = resolve_handle_within_deadline(adapter, &entry, deadline).inspect_err(|err| {
-        let _ = context.trace_lazy("ref.resolve.error", || {
-            json!({
-                "ref": ref_id,
-                "code": err.code.as_str(),
-                "message": err.message.clone(),
-                "details": err.details.clone()
-            })
-        });
-    })?;
+    let handle =
+        resolve_handle_within_deadline(adapter, &entry, deadline, None).inspect_err(|err| {
+            let _ = context.trace_lazy("ref.resolve.error", || {
+                json!({
+                    "ref": ref_id,
+                    "code": err.code.as_str(),
+                    "message": err.message.clone(),
+                    "details": err.details.clone()
+                })
+            });
+        })?;
     tracing::debug!("resolve: {} resolved successfully", ref_id);
     context.trace_lazy("ref.resolve.ok", || json!({ "ref": ref_id }))?;
     Ok((entry, handle))
 }
 
 /// Gives one-shot resolution its full caller budget; polling paths own their slices.
+/// `lease` is an interaction lease the caller already holds, so observation
+/// activation reuses it instead of queueing behind the same process's lock.
 pub(crate) fn resolve_handle_within_deadline(
     adapter: &dyn PlatformAdapter,
     entry: &RefEntry,
     deadline: crate::Deadline,
+    lease: Option<&crate::InteractionLease>,
 ) -> Result<crate::adapter::NativeHandle, crate::AdapterError> {
     if deadline.is_expired() {
         return Err(deadline.timeout_error());
     }
-    adapter.resolve_element_strict(entry, deadline)
+    crate::refs::resolve_saved_ref::resolve_saved_ref(adapter, entry, deadline, lease)
 }
 
 pub(crate) fn execute_ref_action_with_context(
@@ -84,24 +90,56 @@ pub(crate) fn execute_ref_action_with_context(
     request: ActionRequest,
     context: &CommandContext,
 ) -> Result<Value, AppError> {
+    execute_ref_action_dispatching(
+        args,
+        adapter,
+        request,
+        context,
+        crate::ref_action::ref_action_single::dispatch_resolved,
+    )
+}
+
+/// Runs a ref action through `dispatch`, for a caller that keeps what the
+/// dispatch lands on.
+pub(crate) fn execute_ref_action_dispatching(
+    args: RefArgs,
+    adapter: &dyn PlatformAdapter,
+    request: ActionRequest,
+    context: &CommandContext,
+    dispatch: impl Fn(
+        crate::ref_action::ref_action_context::RefActionContext<'_>,
+        ActionRequest,
+        &crate::InteractionLease,
+    ) -> Result<crate::ActionResult, AppError>,
+) -> Result<Value, AppError> {
     let request = request.with_timeout_ms(args.timeout_ms);
     validate_post_action_wait(context)?;
     if request.policy.is_headed() && request.action.headed_requirement().requires_cursor() {
         super::point_resolve::require_pointer_capability(adapter)?;
     }
     let entry = load_ref_entry(&args.ref_id, context)?;
-    let (result, lease, pre, deadline, lease_started) =
-        crate::ref_action::ref_action_wait::execute_with_auto_wait_and_lease(
-            RefActionWaitContext {
-                adapter,
-                entry: &entry,
-                ref_id: &args.ref_id,
-                context,
-            },
-            request,
-            crate::ref_action::dispatch_resolved,
-        )
-        .map_err(AppError::Adapter)?;
+    let action_result = crate::ref_action::ref_action_wait::execute_with_auto_wait_and_lease(
+        RefActionWaitContext {
+            adapter,
+            entry: &entry,
+            ref_id: &args.ref_id,
+            context,
+        },
+        request,
+        dispatch,
+    );
+    let (result, lease, pre, deadline, lease_started) = match action_result {
+        Ok(result) => result,
+        Err(mut error) => {
+            if error.disposition.delivery() == crate::DeliveryDisposition::DeliveryUncertain
+                && let Some(wait) = context.wait_selector()
+            {
+                let observation = post_action_observation::observe(wait, &entry, adapter);
+                error = post_action_observation::attach(error, observation);
+            }
+            return Err(AppError::Adapter(error));
+        }
+    };
     let value = serde_json::to_value(result).map_err(|error| {
         post_delivery_error(AppError::Json(error), json!({ "action": "delivered" }))
     })?;
@@ -124,34 +162,29 @@ pub(crate) fn execute_ref_action_with_context(
     outcome
 }
 
-pub(crate) fn probe_app_name(adapter: &dyn PlatformAdapter, entry: &RefEntry) -> Option<String> {
-    if entry.source.source_app.is_some() {
-        return entry.source.source_app.clone();
-    }
-    let identity = crate::ProcessIdentity::new(
-        entry.process.pid,
-        entry.process.process_instance.as_deref()?,
-    );
-    window_lookup::find_window_for_process(identity, adapter, crate::Deadline::standard().ok()?)
-        .ok()
-        .map(|window| window.app)
-}
-
 pub(crate) fn apply_post_action_wait(
     result: Value,
     entry: Option<&RefEntry>,
     adapter: &dyn PlatformAdapter,
     context: &CommandContext,
 ) -> Result<Value, AppError> {
-    if context.wait_selector().is_none() {
+    let Some(wait) = context.wait_selector() else {
         return Ok(result);
-    }
-    apply_scoped_post_action_wait(
+    };
+    let Some(entry) = entry else {
+        return apply_scoped_post_action_wait(result, None, None, adapter, context);
+    };
+    let input = WaitSelectorInput {
+        query_raw: wait.query_raw.clone(),
+        gone: wait.gone,
+        app: entry.source.source_app.clone(),
+        window_id: entry.source.source_window_id.clone(),
+        opts: TreeOptions::default(),
+        timeout_ms: wait.timeout_ms,
+    };
+    finish_post_action_wait(
         result,
-        entry.and_then(|entry| probe_app_name(adapter, entry)),
-        entry.and_then(|entry| entry.source.source_window_id.clone()),
-        adapter,
-        context,
+        wait_selector::execute_with_ref(input, Some(entry), adapter, context),
     )
 }
 
@@ -165,7 +198,7 @@ pub(crate) fn apply_scoped_post_action_wait(
     let Some(wait) = context.wait_selector() else {
         return Ok(result);
     };
-    match wait_selector::execute(
+    let outcome = wait_selector::execute(
         WaitSelectorInput {
             query_raw: wait.query_raw.clone(),
             gone: wait.gone,
@@ -176,7 +209,15 @@ pub(crate) fn apply_scoped_post_action_wait(
         },
         adapter,
         context,
-    ) {
+    );
+    finish_post_action_wait(result, outcome)
+}
+
+fn finish_post_action_wait(
+    result: Value,
+    outcome: Result<Value, AppError>,
+) -> Result<Value, AppError> {
+    match outcome {
         Ok(mut snapshot) => {
             if let Some(body) = snapshot.as_object_mut() {
                 body.insert("after_action".into(), result);
@@ -268,7 +309,7 @@ pub(crate) fn execute_ref_action_result_with_context(
             context,
         },
         request,
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     )
     .map_err(AppError::Adapter)?;
     Ok((entry, result))

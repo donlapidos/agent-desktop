@@ -1,10 +1,11 @@
 use crate::{
-    AdapterError, AdapterSession, AppInfo, CursorOverlayControl, Deadline,
-    DismissAllNotificationsRequest, DismissNotificationRequest, ImageBuffer, InteractionLease,
-    InteractionPolicy, KeyCombo, NotificationActionRequest, NotificationFilter, NotificationInfo,
-    OperationReport, PermissionReport, PermissionState, ProcessIdentity, SessionAffinity,
-    SignalBaseline, SignalFilter, WindowInfo, WindowOp, actions::action_result::ActionResult,
-    system::display_info::DisplayInfo, system::screenshot_target::ScreenshotTarget,
+    AdapterError, AdapterSession, AppInfo, CursorOverlayControl, Deadline, DeliverySemantics,
+    DismissAllNotificationsRequest, DismissNotificationRequest, ErrorCode, ImageBuffer,
+    InteractionLease, InteractionPolicy, KeyCombo, NotificationActionRequest, NotificationFilter,
+    NotificationInfo, OperationReport, PermissionReport, PermissionState, ProcessIdentity,
+    ProviderScriptOutput, ProviderScriptRequest, SessionAffinity, SignalBaseline, SignalFilter,
+    WindowInfo, WindowOp, actions::action_result::ActionResult, system::display_info::DisplayInfo,
+    system::screenshot_target::ScreenshotTarget,
 };
 
 pub trait SystemOps: Send + Sync {
@@ -76,6 +77,22 @@ pub trait SystemOps: Send + Sync {
         Err(AdapterError::not_supported("focus_window"))
     }
 
+    fn resolve_ref_focus_window(
+        &self,
+        entry: &crate::RefEntry,
+        _deadline: Deadline,
+    ) -> Result<WindowInfo, AdapterError> {
+        crate::saved_ref_focus_window(entry)
+    }
+
+    fn focus_app(
+        &self,
+        _process: ProcessIdentity,
+        _lease: &InteractionLease,
+    ) -> Result<(), AdapterError> {
+        Err(AdapterError::not_supported("focus_app"))
+    }
+
     fn launch_app(
         &self,
         _id: &str,
@@ -102,6 +119,19 @@ pub trait SystemOps: Send + Sync {
         Err(AdapterError::not_supported("process_state"))
     }
 
+    /// Runs one provider script under the platform's bounded process runner.
+    fn run_provider_script(
+        &self,
+        _request: &ProviderScriptRequest,
+    ) -> Result<ProviderScriptOutput, AdapterError> {
+        Err(AdapterError::new(
+            ErrorCode::PlatformNotSupported,
+            "Sandboxes are not available on this platform yet.",
+        )
+        .with_suggestion("Run the command on macOS to use a sandbox provider.")
+        .with_disposition(DeliverySemantics::not_delivered()))
+    }
+
     fn supported_surfaces(&self) -> Vec<crate::adapter::SnapshotSurface> {
         Vec::new()
     }
@@ -111,15 +141,7 @@ pub trait SystemOps: Send + Sync {
         if supported.contains(&requested) {
             return Ok(());
         }
-        Err(AdapterError::new(
-            crate::ErrorCode::PlatformNotSupported,
-            format!("Snapshot surface '{}' is not supported on this platform", requested.as_str()),
-        )
-        .with_details(serde_json::json!({
-            "requested_surface": requested.as_str(),
-            "supported_surfaces": supported.into_iter().map(crate::SnapshotSurface::as_str).collect::<Vec<_>>()
-        }))
-        .with_suggestion("Choose one of the supported snapshot surfaces"))
+        Err(requested.unavailable_error(&supported))
     }
 
     /// Registers caller-scoped wake hints before the initial predicate read.
@@ -137,9 +159,9 @@ pub trait SystemOps: Send + Sync {
     /// presents, in the same shape the window observation stack consumes. It
     /// takes the lease because it mutates OS chrome and takes the foreground;
     /// the policy travels separately because the lease carries no
-    /// focus-steal refusal. Implementations must refuse with `POLICY_DENIED`
-    /// before anything is raised when `policy.allow_focus_steal` is false,
-    /// must return an already-present surface without raising it again, and
+    /// focus-steal refusal. Implementations that raise anything must refuse with
+    /// `POLICY_DENIED` first when `policy.allow_focus_steal` is false, must
+    /// return an already-present surface without raising it again, and
     /// must answer a kind their platform does not expose with a refusal that
     /// names what a caller should ask for instead - never with this default.
     fn open_system_surface(
@@ -311,9 +333,8 @@ pub trait SystemOps: Send + Sync {
         Err(AdapterError::not_supported("window_op"))
     }
 
-    /// Resolves a live window by `WindowInfo.id`, corroborating the match against
-    /// `pid` and, when present, `title`. Opaque ids must not be parsed as numeric
-    /// outside the adapter; macOS uses `w-<kCGWindowNumber>`.
+    /// Resolves the exact window id against its stored pid and process instance.
+    /// Titles and bounds may change; opaque ids are interpreted only by the adapter.
     fn resolve_window_strict(
         &self,
         _win: &WindowInfo,

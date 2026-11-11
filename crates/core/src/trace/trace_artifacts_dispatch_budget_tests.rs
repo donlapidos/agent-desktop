@@ -45,6 +45,7 @@ impl ObservationOps for DeadlineConsumingScreenshotAdapter {
         "Run",
         [crate::actions::capability::CLICK]
     );
+    crate::adapter::saved_ref_scope!("button", Some("Run"));
 }
 
 impl ActionOps for DeadlineConsumingScreenshotAdapter {
@@ -105,8 +106,8 @@ fn slow_pre_capture_preserves_dispatch_budget() {
             ref_id: "@e1",
             context: &context,
         },
-        ActionRequest::headless(Action::Click).with_timeout_ms(Some(500)),
-        crate::ref_action::dispatch_resolved,
+        ActionRequest::headless(Action::Click).with_timeout_ms(Some(ACTION_BUDGET_MS)),
+        crate::ref_action::ref_action_single::dispatch_resolved,
     );
 
     assert!(
@@ -160,7 +161,7 @@ fn contended_artifact_lock_preserves_dispatch_budget() {
             context: &context,
         },
         ActionRequest::headless(Action::Click).with_timeout_ms(Some(ACTION_BUDGET_MS)),
-        crate::ref_action::dispatch_resolved,
+        crate::ref_action::ref_action_single::dispatch_resolved,
     );
 
     assert!(result.is_ok(), "artifact lock blocked dispatch: {result:?}");

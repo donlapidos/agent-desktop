@@ -92,7 +92,7 @@ impl LocatorTraversal {
             logical_depth,
             self.request.max_logical_depth,
         );
-        let mut read = read_node(
+        let read = read_node(
             &element,
             super::node_read_context::NodeReadContext {
                 tree: &self.context,
@@ -120,7 +120,7 @@ impl LocatorTraversal {
                     "Live locator root is no longer a valid accessibility element",
                 )
                 .with_suggestion("Refresh the source snapshot and retry the locator")
-                .with_details(json!({ "kind": "locator_root_invalid" })));
+                .with_details(json!({ "kind": "locator_root_invalid", "ax_error": accessibility_sys::kAXErrorInvalidUIElement, "complete": false })));
             }
             self.arena.mark_incomplete();
             return Ok(None);
@@ -161,15 +161,10 @@ impl LocatorTraversal {
         if !subtree_complete {
             self.arena.mark_incomplete();
         }
-        if let Some(token) = crate::tree::resolve::retained::capture(&element)? {
-            read.evidence.identifiers = read.evidence.identifiers.with_retained_object(token);
-        }
-        Ok(Some(ObservedSubtree::new(
-            read.evidence,
-            children,
-            subtree_complete,
-            children_count,
-        )))
+        Ok(Some(
+            ObservedSubtree::new(read.evidence, children, subtree_complete, children_count)
+                .with_wrapper(read.web_wrapper),
+        ))
     }
 
     fn visit_children(

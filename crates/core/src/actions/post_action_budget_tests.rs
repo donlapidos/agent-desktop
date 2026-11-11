@@ -1,7 +1,9 @@
 use super::*;
+use crate::wait::deadline::VirtualClock;
 
 #[test]
 fn settling_reuses_caller_deadline_without_repeating_delivery() {
+    let _clock = VirtualClock::freeze();
     let adapter = adapter(element(Some("old"), &[]), element(Some("new"), &[]));
     adapter
         .settling
@@ -26,6 +28,7 @@ fn settling_reuses_caller_deadline_without_repeating_delivery() {
 
 #[test]
 fn no_settle_read_is_started_without_remaining_budget() {
+    let _clock = VirtualClock::freeze();
     let adapter = adapter(element(Some("old"), &[]), element(Some("old"), &[]));
     let error = execute_verified_action(
         &adapter,

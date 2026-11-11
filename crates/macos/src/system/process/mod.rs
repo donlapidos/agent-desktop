@@ -49,14 +49,16 @@ pub(crate) fn run_with_deadline(
     })?;
     configure_process_group(command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| AdapterError::internal(format!("{label}: {error}")))?;
+    let mut child = command.spawn().map_err(|error| {
+        AdapterError::internal(format!("{label}: {error}"))
+            .with_disposition(agent_desktop_core::DeliverySemantics::not_delivered())
+    })?;
     let process_group = i32::try_from(child.id()).map_err(|_| {
         let _ = child.kill();
         let _ = child.wait();
         AdapterError::internal(format!("{label}: child PID exceeds the macOS pid_t range"))
     })?;
+    let _interrupt = interrupt::ActiveGroup::track(process_group);
     let mut stdout = child.stdout.take().map(spawn_drain);
     let mut stderr = child.stderr.take().map(spawn_drain);
 
@@ -324,9 +326,13 @@ fn output_limit_error(label: &str, stdout: &DrainResult, stderr: &DrainResult) -
     }))
 }
 
+mod interrupt;
+pub(crate) mod legacy_host;
 pub(crate) mod process_apps;
+pub(crate) mod process_arguments;
 pub(crate) mod process_identity;
 pub(crate) mod process_state;
+pub(crate) mod provider_script;
 #[cfg(all(test, unix))]
 #[path = "process_tests.rs"]
 mod tests;
