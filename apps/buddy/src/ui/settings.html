@@ -157,6 +157,7 @@
   .models { display: grid; gap: 6px; max-width: 440px; }
   .check-row { margin-top: 10px; align-items: center; gap: 10px; }
   .check-row .status-text { color: var(--muted); font-size: 12.5px; }
+  .data-row.dim { opacity: .55; }
   .provider-list { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); max-width: none; }
   .model { display: grid; grid-template-columns: 18px 1fr; gap: 2px 10px; align-items: start; padding: 10px 12px; border: 0; border-radius: 11px; background: var(--field); text-align: left; transition: background .15s, box-shadow .15s; }
   .model:hover { background: var(--field-hover); }
@@ -357,8 +358,8 @@
         <p class="problem" id="key-problem"></p>
       </div>
       <div class="group">
-        <h3>Use with Claude</h3>
-        <p class="help">No API key? Chat in Claude's own apps on your Claude plan, and Claude can use Buddy to read your screen, point the way, explain things and, with your OK, act.</p>
+        <h3>Use with your AI app</h3>
+        <p class="help">No API key? Chat in the AI app you already use, on your own plan (Claude, ChatGPT through Codex, Gemini, Copilot), and it can use Buddy to read your screen, point the way, explain things and, with your OK, act.</p>
         <div id="claude-apps"></div>
         <p class="problem" id="claude-problem"></p>
       </div>
@@ -673,7 +674,7 @@
         row.append(cancel);
       }
       box.append(
-        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : provider().key === "optional" ? "No key saved. Add one only if the server asks for it." : `No ${provider().label} key yet. Buddy's own chat needs one; Use with Claude, below, doesn't.`),
+        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : provider().key === "optional" ? "No key saved. Add one only if the server asks for it." : `No ${provider().label} key yet. Buddy's own chat needs one; Use with your AI app, below, doesn't.`),
         row,
         el("p", { className: "note", textContent: `Get one at ${provider().keyFrom}. It's stored encrypted with Windows and never shown again.` }),
       );
@@ -780,16 +781,14 @@
     clearLog.addEventListener("click", async () => render(await window.buddy.settingsClear("log")));
     $("log-actions").replaceChildren(clearLog);
   }
-  const CLAUDE_APPS = [
-    { id: "code", name: "Claude Code", added: "Added. New Claude Code sessions can use Buddy, and Claude won't stop to check before Buddy looks or points." },
-    { id: "desktop", name: "Claude desktop app", added: "Added. Quit and reopen the Claude app to pick it up." },
-  ];
   let claudeBusy = null;
 
   function renderClaudeApps() {
-    $("claude-apps").replaceChildren(...CLAUDE_APPS.map((a) => {
+    // Apps on this PC first, in the usual order; the rest after, dimmed.
+    const apps = [...S.aiApps].sort((a, b) => (S.claude[a.id] === "missing") - (S.claude[b.id] === "missing"));
+    $("claude-apps").replaceChildren(...apps.map((a) => {
       const status = S.claude[a.id];
-      const text = status === "added" ? a.added : status === "missing" ? "Not on this PC." : "Not added yet.";
+      const text = status === "added" ? `Added. ${a.after}` : status === "missing" ? "Not on this PC." : "Not added yet.";
       const btn = el("button", {
         className: status === "added" ? "btn" : "btn primary",
         textContent: claudeBusy === a.id ? "Working…" : status === "added" ? "Remove" : "Add Buddy",
@@ -803,7 +802,9 @@
         $("claude-problem").textContent = res.error ?? "";
         render(res.state);
       });
-      return el("div", { className: "data-row" }, el("div", {}, el("b", { textContent: a.name }), el("span", { textContent: ` ${text}` })), btn);
+      const row = el("div", { className: "data-row" }, el("div", {}, el("b", { textContent: a.label }), el("span", { textContent: ` ${text}` })), btn);
+      if (status === "missing") row.classList.add("dim");
+      return row;
     }));
   }
 

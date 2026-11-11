@@ -1,5 +1,6 @@
-// Use with Claude: Buddy's screen tools for Claude's own apps (Claude Code, the Claude desktop app), which run the
-// conversation on the user's own Claude plan. Claude starts buddy-mcp (src/mcp-server.js); it reads bridge.json from
+// Use with your AI app: Buddy's screen tools for the AI apps people chat in (Claude Code, the Claude app, Codex and
+// the others in ai-apps.js), which run the conversation on the user's own plan. The app starts buddy-mcp
+// (src/mcp-server.js); it reads bridge.json from
 // Buddy's data folder and talks to this running Buddy over a named pipe. Every tool runs here, through the same Brain
 // code, approval cards and Agents policy as Buddy's own conversations. A client is served only after it presents the
 // token from bridge.json, which changes every time Buddy starts.
@@ -43,7 +44,7 @@ const GET_MARKS = {
 export const BRIDGE_TOOLS = [...TOOLS, GET_MARKS];
 
 // Tools that only look, read, point or show: they change nothing in the user's apps or files. Claude's apps may run
-// them without stopping to check (claude-setup.js adds allow rules for them). Everything else (act, window,
+// them without stopping to check (ai-apps.js adds Claude Code allow rules for them; readOnlyHint tells the other apps). Everything else (act, window,
 // launch_app, create_document) still goes through Claude's own check and Buddy's approval card.
 export const SAFE_TOOLS = Object.freeze(["look", "read_page", "screenshot", "list_windows", "point_at", "wait_for_user", "guide_steps", "show_explainer", "get_marks"]);
 
@@ -61,7 +62,7 @@ const sameToken = (a, b) => typeof a === "string" && a.length === b.length && cr
  * Serves Buddy's tools on the pipe. `run(name, input, signal)` runs one tool and resolves its result (text, or
  * content blocks with images). `onClients(n)` hears how many Claude sessions are connected.
  * `pipe` is for tests; Buddy uses one per Windows user.
- * @param {{ dir: string, run: (name: string, input: object, signal: AbortSignal) => Promise<unknown>, onClients?: (n: number) => void, trace?: (e: object) => void, pipe?: string }} opts
+ * @param {{ dir: string, run: (name: string, input: object, signal: AbortSignal, client?: string) => Promise<unknown>, onClients?: (n: number) => void, trace?: (e: object) => void, pipe?: string }} opts
  */
 export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
   const token = crypto.randomBytes(24).toString("hex");
@@ -72,6 +73,8 @@ export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
 
   const server = net.createServer((socket) => {
     let authed = false;
+    /** @type {string | undefined} which app this connection serves, as buddy-mcp was told (BUDDY_CLIENT) */
+    let client;
     let buf = "";
     /** @type {Map<string, AbortController>} */
     const running = new Map();
@@ -96,7 +99,8 @@ export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
           }
           authed = true;
           onClients?.(++clients);
-          trace?.({ kind: "bridge-connected", client: String(msg.client ?? "").slice(0, 80) });
+          client = String(msg.client ?? "").replace(/[^\w .-]/g, "").slice(0, 40) || undefined;
+          trace?.({ kind: "bridge-connected", client });
           send({ id: msg.id, result: "ok" });
           continue;
         }
@@ -111,7 +115,7 @@ export function startBridge({ dir, run, onClients, trace, pipe = pipeName() }) {
         const ctl = new AbortController();
         running.set(String(msg.id), ctl);
         const start = Date.now();
-        run(msg.name, msg.input ?? {}, ctl.signal)
+        run(msg.name, msg.input ?? {}, ctl.signal, client)
           .then((result) => send({ id: msg.id, result }))
           .catch((err) => send({ id: msg.id, result: `Buddy couldn't do that: ${err?.message ?? err}` }))
           .finally(() => {

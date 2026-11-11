@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentBrain } from "./agent-brain.js";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
-import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop, staleClaude } from "./claude-setup.js";
+import { APPS, APP_IDS, allowRules, appStatus, launchSpec, setApp, setCodeAllowed, staleApps } from "./ai-apps.js";
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
 import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, noteTested, providerForKey, testedOf, useCapsStore, verdict } from "./providers.js";
 import { CASES, runEvals } from "./evals.js";
@@ -186,6 +186,7 @@ function checkModel() {
     baseURL,
     signal: check.abort.signal,
     onCase: (r) => {
+      trace({ kind: "model-check-case", model, id: r.id, passed: r.passed, problem: r.problem, ms: r.ms, turns: r.turns, shown: r.calls.map((c) => `${c.kind}:${c.name}`).slice(0, 12), reply: r.reply.slice(0, 300) });
       check.done++;
       if (r.passed) check.passed++;
       else check.missed.push(r.title);
@@ -859,7 +860,7 @@ function openExplainer(explainer, { near = cursor(), observed = null } = {}) {
 // ---------- IPC ----------
 
 ipcMain.handle("ask", async (_e, text, opts = {}) => {
-  if (!brain) return { reply: "Choose how I think first, in Settings › AI & privacy: an API key (Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek), or a free model on this PC with Ollama or LM Studio. Or ask me from Claude's own app on your Claude plan: Use with Claude, in the same place." };
+  if (!brain) return { reply: "Choose how I think first, in Settings › AI & privacy: an API key (Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek), or a free model on this PC with Ollama or LM Studio. Or ask me from the AI app you already use (Claude, Codex, Gemini, Copilot): Use with your AI app, in the same place." };
   // Typed while the mic was open: the typing wins.
   if (mode === "listening") voice.cancelListening();
   else if (mode !== "idle") return { reply: BUSY[mode] };
@@ -1194,10 +1195,10 @@ function startBrain() {
     : null;
 }
 
-// ---------- Use with Claude: Buddy's tools for Claude's own apps (bridge.js) ----------
+// ---------- Use with your AI app: Buddy's tools for the apps people chat in (bridge.js, ai-apps.js) ----------
 
-// The chat apps the user talks to Claude in; the window they want help with is never one of these.
-const CLIENT_APPS = /^(claude|windowsterminal|code|cursor)\.exe$/i;
+// The chat apps the user talks to an AI in; the window they want help with is never one of these.
+const CLIENT_APPS = /^(claude|codex|windowsterminal|code|cursor|windsurf|lm studio)\.exe$/i;
 // After this long without a call from Claude, "Allow for this task" lapses: the next request is a new task.
 const CLAUDE_TASK_GAP_MS = 120_000;
 const LOOKS_AT_WINDOW = new Set(["look", "read_page", "screenshot"]);
@@ -1228,8 +1229,12 @@ function marksForClaude() {
   ];
 }
 
-/** @param {string} name @param {any} input @param {AbortSignal} signal */
-async function runForClaude(name, input, signal) {
+// The app the latest call came from, by the name buddy-mcp was given ("Claude", "Codex"…), for the island.
+let clientName = "Claude";
+
+/** @param {string} name @param {any} input @param {AbortSignal} signal @param {string} [client] */
+async function runForClaude(name, input, signal, client) {
+  if (client) clientName = client;
   claudeBrain ??= new Brain({
     point: (bounds, caption) => {
       const shown = point(bounds, caption, "claude");
@@ -1237,7 +1242,7 @@ async function runForClaude(name, input, signal) {
       return shown;
     },
     confirm,
-    status: (text) => setIsland("busy", oneLine(`Claude: ${text}`)),
+    status: (text) => setIsland("busy", oneLine(`${clientName}: ${text}`)),
     explain: (plate) => openExplainer(plate, { near: cursor(), observed: claudeBrain?.target ?? null }),
     trace,
     documentsDir: documentsDir(),
@@ -1258,20 +1263,20 @@ async function runForClaude(name, input, signal) {
   }
 }
 
-const claudeSpec = () => launchSpec(process.execPath, path.join(here, "mcp-server.js"));
+const appSpec = (/** @type {import("./ai-apps.js").AppId} */ id) => launchSpec(process.execPath, path.join(here, "mcp-server.js"), id);
 
-/** Adds Buddy to one of Claude's apps, or takes it out. Resolves an error message, or null. */
-async function setClaude(/** @type {"code" | "desktop"} */ which, /** @type {boolean} */ on, why = "settings") {
-  const spec = on ? claudeSpec() : null;
+/** Adds Buddy to one of the AI apps, or takes it out. Resolves an error message, or null. */
+async function setClaude(/** @type {import("./ai-apps.js").AppId} */ which, /** @type {boolean} */ on, why = "settings") {
+  const error = (await setApp(which, on ? appSpec(which) : null)) ?? (which === "code" ? setCodeAllowed(allowRules(SAFE_TOOLS), on) : null);
   // Claude Code also gets allow rules for Buddy's look-and-point tools, so it doesn't stop to check each one.
-  const error = which === "code" ? (await setCode(spec)) ?? setCodeAllowed(allowRules(SAFE_TOOLS), on) : setDesktop(spec);
   trace({ kind: "claude-setup", which, on, why, error });
   return error;
 }
 
-// Claude's apps that start Buddy under an old name or from where Buddy used to be are pointed at this Buddy.
+// Apps that start Buddy under an old name, from where Buddy used to be, or without saying which app they are, are
+// pointed at this Buddy.
 async function repairClaude() {
-  for (const which of staleClaude(claudeSpec())) await setClaude(which, true, "repair");
+  for (const which of staleApps(appSpec)) await setClaude(which, true, "repair");
 }
 
 function startClaudeBridge() {
@@ -1281,8 +1286,8 @@ function startClaudeBridge() {
     trace,
     onClients: (n) => {
       trace({ kind: "bridge-clients", n });
-      // Say so once when a Claude session starts using Buddy; tool calls then show on the island as "Claude: …".
-      if (n > claudeSessions && mode === "idle" && !approval) setIsland("done", "Claude is using Buddy");
+      // Say so once when a chat starts using Buddy; tool calls then show on the island as "Codex: …" and so on.
+      if (n > claudeSessions && mode === "idle" && !approval) setIsland("done", "Your AI app is using Buddy");
       claudeSessions = n;
     },
   });
@@ -1548,7 +1553,8 @@ function settingsState() {
     tested: testedOf(providerURL() ?? undefined, chosenModel() ?? ""),
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
-    claude: claudeStatus(),
+    claude: appStatus(),
+    aiApps: APP_IDS.map((id) => ({ id, label: APPS[id].label, after: APPS[id].after })),
     updates: updates?.state() ?? null,
     routineInfo: Object.fromEntries(
       settings.routines.map((r) => [

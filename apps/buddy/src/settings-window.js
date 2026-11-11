@@ -3,6 +3,7 @@
 // change settings or touch the API key.
 import { BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
+import { APP_IDS } from "./ai-apps.js";
 
 const SIZE = { width: 640, height: 600 };
 
@@ -27,7 +28,7 @@ const SIZE = { width: 640, height: 600 };
  *   installUpdate: () => void,                              // restart into a downloaded update
  *   openReleases: () => void,
  *   openNotices: () => void,                                // the third-party licences
- *   setClaude: (which: "code" | "desktop", on: boolean) => Promise<string | null>, // Use with Claude; an error, or null
+ *   setClaude: (which: import("./ai-apps.js").AppId, on: boolean) => Promise<string | null>, // Use with your AI app; an error, or null
  * }} deps
  */
 export function createSettingsWindow(deps) {
@@ -95,7 +96,7 @@ export function createSettingsWindow(deps) {
   handle("settings-releases", () => deps.openReleases());
   handle("settings-notices", () => deps.openNotices());
   handle("settings-claude", async (which, on) => {
-    if (which !== "code" && which !== "desktop") throw new Error("Not a Claude app");
+    if (!APP_IDS.includes(which)) throw new Error("Not an AI app Buddy knows");
     return { error: await deps.setClaude(which, !!on), state: deps.state() };
   });
   handle("settings-close", () => win?.close());

@@ -32,7 +32,7 @@ const MAX_STEPS = 30;
 // What Buddy says when the model call itself fails, in words an everyday user can act on. Keys are the Agent SDK's
 // error kinds; the direct engine maps its API errors onto the same ones.
 export const FAILURES = {
-  billing_error: "Your Anthropic account is out of credit. Add some at console.anthropic.com under Billing, or ask me from Claude's own app on your Claude plan instead (Settings › AI & privacy › Use with Claude).",
+  billing_error: "Your Anthropic account is out of credit. Add some at console.anthropic.com under Billing, or ask me from the AI app you already use, on your own plan (Settings › AI & privacy › Use with your AI app).",
   authentication_failed: "My API key was rejected. Open settings from the tray to fix it.",
   account_on_hold: "Your Anthropic account is on hold. Check console.anthropic.com, then ask me again.",
   rate_limit: "I'm being rate limited. Give me a moment and try again.",
