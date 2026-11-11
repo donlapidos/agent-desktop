@@ -43,13 +43,13 @@ test("a blocked app wins over everything, however its name is written", () => {
 test("approvals honour the policy: blocked gets no slip, allowed gets one without asking", async () => {
   let asked = 0;
   const confirm = async () => (asked++, "allow");
-  const blocked = await requestApproval({ kind: "click", app: "KeePass", args: ["click", "@s:e1"], headed: false, summary: "Click" }, { confirm, standing: { allowed: false }, policy: policy({ blockedApps: ["KeePass"] }) });
+  const blocked = await requestApproval({ kind: "click", app: "KeePass", args: ["click", "@s:e1"], headed: false, summary: "Click" }, { confirm, standing: new Set(), policy: policy({ blockedApps: ["KeePass"] }) });
   assert.equal(blocked, null);
   assert.equal(asked, 0, "a blocked action never even reaches the card");
-  const allowed = await requestApproval({ kind: "scroll_to", app: "Excel", args: ["scroll-to", "@s:e1"], headed: false, summary: "Scroll" }, { confirm, standing: { allowed: false }, policy: policy({ rope: "safe" }) });
+  const allowed = await requestApproval({ kind: "scroll_to", app: "Excel", args: ["scroll-to", "@s:e1"], headed: false, summary: "Scroll" }, { confirm, standing: new Set(), policy: policy({ rope: "safe" }) });
   assert.ok(redeem(allowed));
   assert.equal(asked, 0, "an allowed action isn't asked about");
-  const asking = await requestApproval({ kind: "click", app: "Excel", args: ["click", "@s:e1"], headed: false, summary: "Click" }, { confirm, standing: { allowed: false }, policy: policy({ rope: "safe" }) });
+  const asking = await requestApproval({ kind: "click", app: "Excel", args: ["click", "@s:e1"], headed: false, summary: "Click" }, { confirm, standing: new Set(), policy: policy({ rope: "safe" }) });
   assert.ok(asking);
   assert.equal(asked, 1);
 });

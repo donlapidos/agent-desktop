@@ -31,13 +31,20 @@ import { decide } from "./policy.js";
 const issued = new WeakSet();
 
 /**
- * How to ask. `standing` is the answer's "Allow for this task": once true, later requests in the same answer pass
- * unasked. `policy` is the user's Agents settings; without one, every action is asked about.
+ * How to ask. `standing` is the answer's "Allow for this task", kept per scope: the user's "Allow for this task" on a
+ * request lets later requests of the same scope in the same answer pass unasked, and nothing else. Scopes:
+ *   screen        clicks, typing, moving windows, opening apps (every input action)
+ *   read          reading files outside the user's everyday folders
+ *   files         making or changing files and documents
+ *   powershell    running PowerShell
+ *   web:<host>    reading pages on one site
+ * A request without a scope always asks. `policy` is the user's Agents settings; without one, every action asks.
  * @typedef {{
  *   confirm: (summary: string, bounds: import("./geometry.js").PhysicalRect | null, note?: string, signal?: AbortSignal) => Promise<Decision | string>,
  *   bounds?: import("./geometry.js").PhysicalRect | null,
  *   note?: string,
- *   standing: { allowed: boolean },
+ *   scope?: string,
+ *   standing: Set<string>,
  *   policy?: import("./policy.js").AgentPolicy,
  * }} Ask
  */
@@ -62,10 +69,10 @@ function issue(action) {
  * @param {Ask} how
  * @returns {Promise<boolean>}
  */
-export async function askUser(summary, { confirm, bounds = null, note, standing }) {
-  if (standing.allowed) return true;
+export async function askUser(summary, { confirm, bounds = null, note, scope, standing }) {
+  if (scope && standing.has(scope)) return true;
   const decision = await confirm(summary, bounds, note);
-  if (decision === "always") standing.allowed = true;
+  if (decision === "always" && scope) standing.add(scope);
   return decision === "allow" || decision === "always";
 }
 
@@ -79,7 +86,7 @@ export async function askUser(summary, { confirm, bounds = null, note, standing 
 export async function requestApproval(action, how) {
   const verdict = how.policy ? decide(how.policy, action) : "ask";
   if (verdict === "block") return null;
-  if (verdict === "ask" && !(await askUser(action.summary, how))) return null;
+  if (verdict === "ask" && !(await askUser(action.summary, { ...how, scope: "screen" }))) return null;
   return issue(action);
 }
 

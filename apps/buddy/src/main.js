@@ -1353,7 +1353,7 @@ async function runForClaude(name, input, signal, client) {
     documentsDir: documentsDir(),
     openFile,
   });
-  if (Date.now() - claudeLastCall > CLAUDE_TASK_GAP_MS) claudeBrain.standing = { allowed: false };
+  if (Date.now() - claudeLastCall > CLAUDE_TASK_GAP_MS) claudeBrain.standing = new Set();
   claudeLastCall = Date.now();
   if ((LOOKS_AT_WINDOW.has(name) && !input.app && !input.root) || !claudeBrain.target) claudeBrain.target = await userWindow();
   const abort = new AbortController();

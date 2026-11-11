@@ -34,6 +34,20 @@ function toMcp(result) {
 const base = (p) => path.basename(String(p ?? ""));
 
 /** What a built-in tool call will do, for the approval card. */
+// Which "Allow for this task" a built-in tool falls under (approvals.js scopes).
+function scopeOf(name, input) {
+  if (name === "PowerShell") return "powershell";
+  if (name === "Write" || name === "Edit") return "files";
+  if (name === "WebFetch") {
+    try {
+      return `web:${new URL(String(input.url)).host}`;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 function describeBuiltIn(name, input) {
   switch (name) {
     case "PowerShell": return { summary: String(input.description || "Run a command on your PC"), note: String(input.command ?? "").slice(0, 300) };
@@ -131,7 +145,7 @@ export class AgentBrain extends Brain {
         },
         canUseTool: async (name, input) => {
           const { summary, note } = describeBuiltIn(name, input);
-          const ok = await askUser(summary, this.asking({ note }));
+          const ok = await askUser(summary, { ...this.asking({ note }), scope: scopeOf(name, input) });
           return ok ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "The user declined." };
         },
       },
@@ -146,7 +160,7 @@ export class AgentBrain extends Brain {
   }
 
   async run(target, content) {
-    this.standing = { allowed: false };
+    this.standing = new Set();
     this.target = target;
     this.abort = new AbortController();
     if (!this.live || this.live.closed) this.open();

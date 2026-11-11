@@ -282,7 +282,7 @@ function runPowerShell(/** @type {string} */ command, { cwd, timeoutMs, signal }
  * @typedef {{
  *   places: Places,
  *   undoDir: string,
- *   ask: (summary: string, note?: string) => Promise<boolean>,
+ *   ask: (summary: string, note?: string, scope?: string) => Promise<boolean>,   // scope: approvals.js
  *   status: (text: string) => void,
  *   record?: (change: Omit<import("./activity.js").Change, "id" | "at" | "from">) => void,
  *   signal?: AbortSignal,
@@ -304,7 +304,7 @@ export async function runPcTool(name, input, ctx) {
     case "list_folder": {
       const j = place(input.path);
       if (j.read === "never") return refused(j);
-      if (j.read === "ask" && !(await ctx.ask(`Look in ${inside(j.full, p.home) ? path.relative(p.home, j.full) || "your home folder" : j.full}`))) return "The user declined.";
+      if (j.read === "ask" && !(await ctx.ask(`Look in ${inside(j.full, p.home) ? path.relative(p.home, j.full) || "your home folder" : j.full}`, undefined, "read"))) return "The user declined.";
       let entries;
       try {
         entries = fs.readdirSync(j.full, { withFileTypes: true });
@@ -327,7 +327,7 @@ export async function runPcTool(name, input, ctx) {
     case "read_file": {
       const j = place(input.path);
       if (j.read === "never") return refused(j);
-      if (j.read === "ask" && !(await ctx.ask(`Read ${placeWords(j.full, p)}`))) return "The user declined.";
+      if (j.read === "ask" && !(await ctx.ask(`Read ${placeWords(j.full, p)}`, undefined, "read"))) return "The user declined.";
       let buf;
       try {
         if (fs.statSync(j.full).size > 20 * 1048576) return "That file is over 20 MB; read it with run_powershell (Get-Content -TotalCount, Select-String).";
@@ -354,7 +354,7 @@ export async function runPcTool(name, input, ctx) {
       if (typeof input.content !== "string") return "write_file needs content.";
       const exists = fs.existsSync(j.full);
       if (exists && fs.statSync(j.full).isDirectory()) return "That's a folder, not a file.";
-      if (!(await ctx.ask(`${exists ? "Replace" : "Create"} ${placeWords(j.full, p)}`, exists ? "The old version is kept for a week." : undefined))) return "The user declined.";
+      if (!(await ctx.ask(`${exists ? "Replace" : "Create"} ${placeWords(j.full, p)}`, exists ? "The old version is kept for a week." : undefined, "files"))) return "The user declined.";
       ctx.status(exists ? "Updating a file…" : "Making a file…");
       const copy = exists ? keepCopy(j.full, ctx.undoDir) : undefined;
       fs.mkdirSync(path.dirname(j.full), { recursive: true });
@@ -377,7 +377,7 @@ export async function runPcTool(name, input, ctx) {
       const times = text.split(old).length - 1;
       if (!times) return "old_text isn't in the file. Read the file again and copy the text exactly.";
       if (times > 1 && !input.replace_all) return `old_text is in the file ${times} times. Include more of the text around it, or set replace_all.`;
-      if (!(await ctx.ask(`Change ${placeWords(j.full, p)}`, "The old version is kept for a week."))) return "The user declined.";
+      if (!(await ctx.ask(`Change ${placeWords(j.full, p)}`, "The old version is kept for a week.", "files"))) return "The user declined.";
       ctx.status("Updating a file…");
       const copy = keepCopy(j.full, ctx.undoDir);
       const next = input.replace_all ? text.split(old).join(String(input.new_text ?? "")) : text.replace(old, () => String(input.new_text ?? ""));
@@ -390,7 +390,7 @@ export async function runPcTool(name, input, ctx) {
       const command = String(input.command ?? "").trim();
       if (!command) return "run_powershell needs a command.";
       const said = String(input.description ?? "").trim() || "Run a command on your PC";
-      if (!(await ctx.ask(said, command.length > 300 ? `${command.slice(0, 300)}…` : command))) return "The user declined.";
+      if (!(await ctx.ask(said, command.length > 300 ? `${command.slice(0, 300)}…` : command, "powershell"))) return "The user declined.";
       ctx.status(said.endsWith("…") ? said : `${said}…`);
       fs.mkdirSync(p.workDir, { recursive: true });
       const timeoutMs = Math.min(300, Math.max(5, Number(input.timeout_seconds) || 60)) * 1000;
@@ -410,7 +410,7 @@ export async function runPcTool(name, input, ctx) {
       }
       if (u.protocol !== "https:" && u.protocol !== "http:") return "Only http and https pages can be read.";
       if (privateHost(u.hostname)) return "Not allowed: addresses on this PC or the local network can't be read.";
-      if (!(await ctx.ask(`Read a page on ${u.hostname}`, u.toString().slice(0, 300)))) return "The user declined.";
+      if (!(await ctx.ask(`Read a page on ${u.hostname}`, u.toString().slice(0, 300), `web:${u.hostname}`))) return "The user declined.";
       ctx.status(`Reading ${u.hostname}…`);
       ctx.record?.({ kind: "read", summary: `Read a page on ${u.hostname}` });
       try {

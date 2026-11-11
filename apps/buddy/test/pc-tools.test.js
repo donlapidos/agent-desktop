@@ -155,3 +155,36 @@ test("Buddy's own conversations get the PC tools; a Brain serving Claude's apps 
   assert.ok(!bridged.tools().some((t) => t.name === "write_file"));
   assert.doesNotMatch(bridged.system(), /Beyond the screen/);
 });
+
+test("an Allow for this task on a file change doesn't let PowerShell or a web page through unasked", async () => {
+  const { places } = pc();
+  const cards = [];
+  const b = new Brain({ point: async () => {}, status: () => {}, confirm: async (s) => (cards.push(s), "always"), documentsDir: places.workDir, dataDir: places.buddyData });
+  b.abort = new AbortController();
+  await b.runTool("write_file", { path: "a.txt", content: "a" });
+  await b.runTool("write_file", { path: "b.txt", content: "b" });
+  assert.equal(cards.length, 1, "the second file change passes under Allow for this task");
+  await b.runTool("run_powershell", { command: "'hi'", description: "Say hi" });
+  assert.equal(cards.at(-1), "Say hi", "PowerShell asks for itself");
+  assert.equal(cards.length, 2);
+  await b.runTool("fetch_page", { url: "http://localhost/" });
+  assert.equal(cards.length, 2, "(a refused address isn't asked about at all)");
+});
+
+test("reading pages: Allow for this task covers that site, not the next one", async () => {
+  const { askUser } = await import("../src/approvals.js");
+  const { ctx } = pc();
+  const standing = new Set();
+  const cards = [];
+  const c = {
+    ...ctx(),
+    ask: (summary, note, scope) => askUser(summary, { confirm: async (s) => (cards.push(s), "always"), note, scope, standing }),
+    fetchImpl: async () => new Response("<title>t</title><p>x</p>", { status: 200, headers: { "content-type": "text/html" } }),
+    lookup: async () => false,
+  };
+  await runPcTool("fetch_page", { url: "https://news.example/a" }, c);
+  await runPcTool("fetch_page", { url: "https://news.example/b" }, c);
+  assert.deepEqual(cards, ["Read a page on news.example"], "the same site passes");
+  await runPcTool("fetch_page", { url: "https://elsewhere.example/?data=secret" }, c);
+  assert.deepEqual(cards, ["Read a page on news.example", "Read a page on elsewhere.example"], "another site asks");
+});

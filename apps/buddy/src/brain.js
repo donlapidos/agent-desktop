@@ -576,7 +576,9 @@ export class Brain {
     /** @type {Map<number, import("./geometry.js").PhysicalRect>} mark number -> its box */
     this.marks = new Map();
     // "Allow for this task": set by the approval card, good until this answer ends.
-    this.standing = { allowed: false };
+    this.standing = new Set();
+    /** @type {string[]} files this answer made, shown when it ends (run) */
+    this.made = [];
     // What the user said and what Buddy answered, in plain words, for task windows to show.
     this.log = [];
   }
@@ -666,7 +668,7 @@ export class Brain {
   }
 
   async run(target, content) {
-    this.standing = { allowed: false };
+    this.standing = new Set();
     this.target = target;
     this.messages.push({ role: "user", content });
 
@@ -772,7 +774,7 @@ export class Brain {
     return runPcTool(name, input, {
       places: placesHere(/** @type {string} */ (this.ui.documentsDir), dataDir),
       undoDir: path.join(dataDir, "undo"),
-      ask: (summary, note) => askUser(summary, this.asking({ note })),
+      ask: (summary, note, scope) => askUser(summary, { ...this.asking({ note }), scope }),
       status: (text) => this.ui.status(text),
       signal: this.abort?.signal,
       record: (change) => {
@@ -946,7 +948,7 @@ export class Brain {
       case "create_document": {
         if (!input.title?.trim() || !input.markdown?.trim()) return "create_document needs a title and markdown.";
         if (!this.ui.documentsDir || !this.ui.openFile) return "Documents can't be created from here.";
-        if (!(await askUser(`Create "${input.title}" in Documents\\Buddy and open it in Word`, this.asking()))) return "The user declined.";
+        if (!(await askUser(`Create "${input.title}" in Documents\\Buddy and open it in Word`, { ...this.asking(), scope: "files" }))) return "The user declined.";
         this.ui.status("Writing the document…");
         const file = await writeDocx({ title: input.title, markdown: input.markdown, dir: this.ui.documentsDir });
         this.ui.record?.({ kind: "document", summary: `Made the document "${input.title}"`, file, after: fingerprint(file), from: this.ui.source ?? "Buddy" });
