@@ -228,7 +228,7 @@
     state = s;
     document.body.dataset.state = s;
     label.textContent = text || "Buddy";
-    hint.textContent = s === "active" ? `${hotkey} to close` : s === "listening" ? `${talkKey} to send` : s === "speaking" ? "click to stop" : hotkey;
+    hint.textContent = s === "active" ? `${talkKey} to talk` : s === "listening" ? `${talkKey} to send` : s === "speaking" ? "click to stop" : hotkey;
     if (s !== "listening") bars.forEach((b) => (b.style.height = ""));
     if (s !== "idle") pill.classList.remove("open");
     clearTimeout(idleTimer);

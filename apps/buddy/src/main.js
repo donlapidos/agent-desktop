@@ -462,9 +462,10 @@ function setIsland(state, text) {
 }
 
 // The island when nothing is running: speaking while Buddy still talks, active while the bubble is open, else idle.
+// Active says "Ready", never "Listening": the microphone is only on after the talk shortcut (mode "listening").
 function restIsland() {
   if (voice?.speaking) setIsland("speaking", saying);
-  else if (bubble.isVisible()) setIsland("active", "Listening");
+  else if (bubble.isVisible()) setIsland("active", "Ready");
   else setIsland("idle");
 }
 
