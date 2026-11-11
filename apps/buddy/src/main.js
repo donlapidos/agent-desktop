@@ -171,7 +171,14 @@ function startActivity() {
   activity = createActivity({
     file: path.join(app.getPath("userData"), "activity.json"),
     undoDir: path.join(app.getPath("userData"), "undo"),
-    trash: (file) => shell.trashItem(file),
+    // End-to-end checks put "trashed" files in a bin of their own, not the user's Recycle Bin.
+    trash: process.env.BUDDY_E2E
+      ? async (file) => {
+          const bin = path.join(app.getPath("userData"), "e2e-bin");
+          fs.mkdirSync(bin, { recursive: true });
+          fs.renameSync(file, path.join(bin, path.basename(file)));
+        }
+      : (file) => shell.trashItem(file),
     onChange: () => settingsWindow?.refresh(),
   });
 }
@@ -179,6 +186,8 @@ function startActivity() {
 async function revealMade(/** @type {string[]} */ files) {
   const there = files.filter((f) => fs.existsSync(f));
   if (!there.length) return;
+  // End-to-end checks (BUDDY_E2E) say what would open instead of opening windows over the user's work.
+  if (process.env.BUDDY_E2E) return console.log("REVEALED", JSON.stringify(there));
   if (there.length > 1) return shell.showItemInFolder(there.at(-1) ?? there[0]);
   const error = await shell.openPath(there[0]);
   if (error) shell.showItemInFolder(there[0]);
@@ -1202,7 +1211,8 @@ function clearOldSessions() {
 }
 
 // Where create_document saves, and how it opens the result (Word, or whatever opens .docx here).
-const documentsDir = () => path.join(app.getPath("documents"), "Buddy");
+// BUDDY_DOCUMENTS_DIR moves it (end-to-end checks keep their files out of the user's Documents).
+const documentsDir = () => process.env.BUDDY_DOCUMENTS_DIR ?? path.join(app.getPath("documents"), "Buddy");
 // Spike: BUDDY_ENGINE=sdk runs conversations on the Claude Agent SDK (src/agent-brain.js).
 /** @typedef {import("./providers.js").ProviderId} ProviderId */
 // The Agent SDK engine runs Claude Code, so it only works with an Anthropic key.
@@ -1750,7 +1760,7 @@ app.whenReady().then(() => {
   refreshModels().catch(() => {});
   setAgentPolicy(settings);
   app.setAppUserModelId(APP_ID);
-  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_SETTINGS_TEST || process.env.BUDDY_APPROVAL_TEST || process.env.BUDDY_THEME;
+  const devRun = process.env.BUDDY_POINT_TEST || process.env.BUDDY_EXPLAINER_TEST || process.env.BUDDY_MARK_TEST || process.env.BUDDY_TASK_TEST || process.env.BUDDY_VOICE_TEST || process.env.BUDDY_SETTINGS_TEST || process.env.BUDDY_APPROVAL_TEST || process.env.BUDDY_FILES_TEST || process.env.BUDDY_THEME;
   if (!devRun) firstRunSetup();
   lockExplainerSession();
   clearOldSessions();
@@ -1804,6 +1814,7 @@ app.whenReady().then(() => {
           const img = await bubble.webContents.capturePage();
           fs.writeFileSync(process.env.BUDDY_MARK_TEST_OUT.replace(/.png$/, "-bubble.png"), img.toPNG());
           console.log("BUBBLE_SHOT", JSON.stringify(bubble.getBounds()), JSON.stringify(island.getBounds()));
+          console.log("MARK_TEST_DONE");
         }, 600);
       }, 100);
     }, 2500);
@@ -1995,6 +2006,8 @@ app.whenReady().then(() => {
       console.log("SETTINGS_ROUTINE", JSON.stringify({ info: settingsState().routineInfo.rtest1, started }));
       // Dictation types through the clipboard into the focused app, then puts the clipboard back. The target is a window
       // of Buddy's own, and the paste is skipped unless it really has the keyboard, so nothing lands in another app.
+      // It replaces what the user had copied, so it runs only when asked (BUDDY_SETTINGS_TEST_DICTATION=1).
+      if (process.env.BUDDY_SETTINGS_TEST_DICTATION) {
       const pad = new BrowserWindow({ width: 420, height: 160, show: false, title: "Buddy dictation check", webPreferences: { sandbox: true } });
       await pad.loadURL("data:text/html,<title>Buddy dictation check</title><textarea id=t autofocus style='width:100%;height:120px'></textarea>");
       pad.show();
@@ -2014,6 +2027,7 @@ app.whenReady().then(() => {
         }));
       } else console.log("SETTINGS_DICTATION", JSON.stringify({ skipped: "the test window didn't get the keyboard" }));
       pad.destroy();
+      } else console.log("SETTINGS_DICTATION", JSON.stringify({ skipped: "not asked for (BUDDY_SETTINGS_TEST_DICTATION)" }));
       // Language: Spanish spoken by the voice, heard through Buddy's own speech process with detection on.
       changeSettings({ language: "auto" });
       voice.mute();
@@ -2035,6 +2049,46 @@ app.whenReady().then(() => {
   } else if (process.env.BUDDY_EXPLAINER_TEST) {
     // Dev check for the explainer renderer: BUDDY_EXPLAINER_TEST=path/to/explainer.json (show_explainer input)
     openExplainer(JSON.parse(fs.readFileSync(process.env.BUDDY_EXPLAINER_TEST, "utf8")));
+    setTimeout(async () => {
+      const plates = BrowserWindow.getAllWindows().filter((w) => /explainer/i.test(w.webContents.getURL()));
+      const out = process.env.BUDDY_EXPLAINER_TEST_OUT;
+      if (out && plates[0]) fs.writeFileSync(out, (await plates[0].webContents.capturePage()).toPNG());
+      const text = plates[0] ? await plates[0].webContents.executeJavaScript("document.body.innerText") : "";
+      console.log("EXPLAINER_SHOWN", JSON.stringify({ windows: plates.length, visible: plates.some((w) => w.isVisible()), chars: text.length, title: text.split("\n").find((l) => l.trim()) ?? "" }));
+      console.log("EXPLAINER_TEST_DONE");
+    }, 4000);
+  } else if (process.env.BUDDY_FILES_TEST) {
+    // End-to-end check of Buddy working with files, through the real app: BUDDY_FILES_TEST=<address of a scripted
+    // OpenAI-style server> (scripts/e2e.mjs runs one). The model asks to make a file; the approval card is clicked;
+    // the file is made, shown, listed in Activity, and undone. Files go to BUDDY_DOCUMENTS_DIR.
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    setTimeout(async () => {
+      changeSettings({ provider: "custom", providerURLs: { custom: process.env.BUDDY_FILES_TEST }, providerModels: { custom: "scripted" } });
+      setBrainDefaults(settings);
+      startBrain();
+      await wait(500);
+      const answer = bubble.webContents.executeJavaScript(`window.buddy.ask("Make me a shopping list file with eggs, milk and bread.", {})`);
+      let carded = false;
+      for (let i = 0; i < 100 && !carded; i++) {
+        await wait(100);
+        carded = await bubble.webContents.executeJavaScript(`document.getElementById("confirm").classList.contains("on")`);
+      }
+      const card = carded ? await bubble.webContents.executeJavaScript(`document.getElementById("what").textContent`) : null;
+      await wait(700);
+      if (carded) await bubble.webContents.executeJavaScript(`document.querySelector('#confirm [data-d="allow"]').click()`);
+      const { reply } = await answer;
+      const file = path.join(documentsDir(), "Shopping list.txt");
+      const made = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+      const listed = activity?.list() ?? [];
+      settingsWindow.open("activity");
+      await wait(1800);
+      const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith("settings.html"));
+      const page = win ? await win.webContents.executeJavaScript(`document.getElementById("page-activity").hidden ? null : document.getElementById("activity").innerText`) : null;
+      if (win && process.env.BUDDY_FILES_TEST_OUT) fs.writeFileSync(process.env.BUDDY_FILES_TEST_OUT, (await win.webContents.capturePage()).toPNG());
+      const undone = listed[0] ? await activity?.undo(listed[0].id) : null;
+      console.log("FILES_TEST", JSON.stringify({ card, reply, made, listed: listed.map((e) => ({ kind: e.kind, summary: e.summary, canUndo: e.canUndo })), page, undone, goneAfterUndo: !fs.existsSync(file) }));
+      console.log("FILES_TEST_DONE");
+    }, 2500);
   } else if (!brain) summon();
 });
 
