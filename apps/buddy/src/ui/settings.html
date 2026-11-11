@@ -683,7 +683,7 @@
 
   const provider = () => S.providers.find((p) => p.id === S.settings.provider) ?? S.providers[0];
 
-  // The model check: six short Buddy tasks on the chosen model, scored (main.js checkModel, evals.js).
+  // The model check: short Buddy tasks on the chosen model, scored (main.js checkModel, evals.js).
   function renderModelCheck() {
     const s = S.settings;
     const chosen = s.provider === "anthropic" ? s.model : s.providerModels[s.provider];
@@ -699,8 +699,8 @@
       : c?.stopped ? "Stopped. Nothing was saved."
       : c?.missed.length ? `Missed: ${c.missed.join(", ")}.`
       : t ? ""
-      : provider().local ? "Runs six short Buddy tasks on this model and scores them. Free, since it runs on this PC."
-      : "Runs six short Buddy tasks on this model and scores them. Uses a little of your account: about a dozen requests.";
+      : provider().local ? `Runs ${S.checkTasks} short Buddy tasks on this model and scores them. Free, since it runs on this PC.`
+      : `Runs ${S.checkTasks} short Buddy tasks on this model and scores them. Uses a little of your account: about ${S.checkTasks * 2} requests.`;
   }
 
   function renderModel() {

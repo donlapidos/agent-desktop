@@ -6,7 +6,6 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentBrain } from "./agent-brain.js";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
 import { APPS, APP_IDS, allowRules, appStatus, launchSpec, setApp, setCodeAllowed, staleApps } from "./ai-apps.js";
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
@@ -1177,7 +1176,10 @@ const documentsDir = () => path.join(app.getPath("documents"), "Buddy");
 // Spike: BUDDY_ENGINE=sdk runs conversations on the Claude Agent SDK (src/agent-brain.js).
 /** @typedef {import("./providers.js").ProviderId} ProviderId */
 // The Agent SDK engine runs Claude Code, so it only works with an Anthropic key.
-const makeEngine = (ui) => (process.env.BUDDY_ENGINE === "sdk" && currentProvider() === "anthropic" ? new AgentBrain({ ...ui, agentDir: path.join(app.getPath("userData"), "agent") }) : new Brain(ui));
+// Loaded only when asked for: Buddy's own engine does everything for every provider, so installers leave the Agent SDK
+// (and the Claude Code program it runs, 346 MB) out.
+const AgentBrain = process.env.BUDDY_ENGINE === "sdk" ? (await import("./agent-brain.js")).AgentBrain : null;
+const makeEngine = (ui) => (AgentBrain && currentProvider() === "anthropic" ? new AgentBrain({ ...ui, agentDir: path.join(app.getPath("userData"), "agent") }) : new Brain(ui));
 const openFile = (file) => shell.openPath(file);
 
 // The bubble's plates open beside what the user pointed at and say which app it was in.
@@ -1191,7 +1193,7 @@ const providerUI = () => ({ apiKey: loadApiKey() ?? "", provider: currentProvide
 
 function startBrain() {
   brain = providerReady()
-    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
+    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), openFile })
     : null;
 }
 
@@ -1300,7 +1302,7 @@ function startTasks() {
     here,
     icon: ICON,
     makeBrain: (ui) => {
-      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), openFile, ...ui }) : null;
+      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), dataDir: app.getPath("userData"), openFile, ...ui }) : null;
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,
@@ -1551,6 +1553,7 @@ function settingsState() {
     providerModels: modelListState(),
     modelCheck: modelCheck && { model: modelCheck.model, provider: modelCheck.provider, running: modelCheck.running, stopped: !!modelCheck.stopped, done: modelCheck.done, total: modelCheck.total, passed: modelCheck.passed, missed: modelCheck.missed },
     tested: testedOf(providerURL() ?? undefined, chosenModel() ?? ""),
+    checkTasks: CASES.length,
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
     claude: appStatus(),

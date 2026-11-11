@@ -79,3 +79,15 @@ test("every case's window renders, and each case is told apart from the others b
   assert.equal(ids.size, CASES.length);
   for (const c of CASES) assert.notEqual(c.check([], ""), null, `${c.id}: doing nothing doesn't pass`);
 });
+
+test("the file task passes when the list is written with everything on it", async () => {
+  await withScript([call("write_file", { path: "Shopping list.txt", content: "- Eggs\n- Milk\n- Bread\n" }), text("Saved your list.")], async (sent) => {
+    const run = await runEvals({ provider: "custom", apiKey: "", baseURL: URL, cases: one("shopping-file") });
+    assert.equal(run.passed, 1, run.results[0].problem ?? "");
+    assert.ok(sent[0].tools.some((t) => t.function.name === "write_file"), "the model is offered the PC tools");
+  });
+  await withScript([call("write_file", { path: "list.txt", content: "eggs, milk" }), text("Saved.")], async () => {
+    const run = await runEvals({ provider: "custom", apiKey: "", baseURL: URL, cases: one("shopping-file") });
+    assert.match(run.results[0].problem ?? "", /missing bread/);
+  });
+});

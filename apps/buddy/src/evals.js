@@ -69,7 +69,7 @@ const NOTEPAD = windowTree(["window", "notes.txt - Notepad", [
 // ---------- Cases ----------
 
 /**
- * @typedef {{ kind: "point" | "guide" | "act" | "explainer" | "other", name: string, input?: any }} Call
+ * @typedef {{ kind: "point" | "guide" | "act" | "explainer" | "file" | "other", name: string, input?: any }} Call
  * @typedef {{ id: string, title: string, app: string, window: any, ask: string, check: (calls: Call[], reply: string) => string | null }} EvalCase
  * check returns null when the case passed, else what was wrong, in words.
  */
@@ -142,6 +142,20 @@ export const CASES = [
         ? null
         : `didn't click Bold or press Ctrl+B (${calls.map((c) => `${c.kind} ${c.name}`).join(", ") || "no tool calls"})`,
   },
+  {
+    id: "shopping-file",
+    title: "Files: write a shopping list",
+    app: "Notepad.exe",
+    window: NOTEPAD,
+    ask: "Make me a shopping list file with eggs, milk and bread.",
+    check: (calls) => {
+      const wrote = calls.find((c) => c.kind === "file" && c.name === "write_file");
+      if (!wrote) return `didn't write a file (${calls.map((c) => `${c.kind} ${c.name}`).join(", ") || "no tool calls"})`;
+      const text = String(wrote.input?.content ?? "").toLowerCase();
+      const missing = ["eggs", "milk", "bread"].filter((w) => !text.includes(w));
+      return missing.length ? `the file is missing ${missing.join(", ")}` : null;
+    },
+  },
 ];
 
 // ---------- Running ----------
@@ -190,6 +204,18 @@ class EvalBrain extends Brain {
       case "act":
         this.calls.push({ kind: "act", name: input.ref ? named(input.ref) : String(input.keys ?? input.action), input });
         return "Done.";
+      case "list_folder":
+        this.calls.push({ kind: "file", name, input });
+        return `${input.path} (2 items)
+Budget.xlsx · 12 KB · 2026-11-02 09:14
+notes.txt · 1 KB · 2026-11-10 17:40`;
+      case "read_file":
+      case "write_file":
+      case "edit_file":
+      case "run_powershell":
+      case "fetch_page":
+        this.calls.push({ kind: "file", name, input });
+        return name === "read_file" ? "Groceries: eggs" : "Done.";
       case "show_explainer":
         this.calls.push({ kind: "explainer", name: String(input.common_name ?? ""), input });
         return "Shown.";
@@ -222,6 +248,9 @@ export async function runEvals({ provider, apiKey, baseURL, cases = CASES, timeo
       apiKey,
       provider,
       baseURL,
+      // Gives the model Buddy's PC tools; they are only recorded here (EvalBrain.runTool), never run.
+      documentsDir: "C:\\Eval\\Documents\\Buddy",
+      dataDir: "C:\\Eval\\Data",
       point: async () => {},
       confirm: async () => "allow",
       status: () => {},

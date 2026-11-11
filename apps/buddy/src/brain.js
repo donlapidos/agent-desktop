@@ -5,6 +5,8 @@ import { decide } from "./policy.js";
 import { findControl, observe, perform, renderReading, renderTree, snapshotResilient, waitForProgress } from "./desktop.js";
 import { writeDocx } from "./documents.js";
 import { PROVIDERS, ProviderError, capsOf, chatTurn } from "./providers.js";
+import { BEYOND_SCREEN, PC_TOOLS, PC_TOOL_NAMES, placesHere, runPcTool } from "./pc-tools.js";
+import path from "node:path";
 
 /** @typedef {"low" | "medium" | "high" | "xhigh" | "max"} Effort */
 
@@ -533,6 +535,7 @@ const spokenNote = (lang) =>
  *   explain?: (plate: object) => void | Promise<void>,
  *   trace?: (entry: object) => void,
  *   documentsDir?: string,
+ *   dataDir?: string,
  *   openFile?: (file: string) => Promise<string>,
  *   agentDir?: string,
  * }} BrainUI
@@ -742,6 +745,31 @@ export class Brain {
     return "That took more steps than I allow myself. Tell me where I got stuck and I'll keep going.";
   }
 
+  // Buddy's own conversations also get the PC tools (files, PowerShell, web pages) when they have a working folder
+  // and a data folder to keep undo copies in. A Brain serving Claude's apps over the bridge has neither.
+  get pcReady() {
+    return !!(this.ui.documentsDir && this.ui.dataDir);
+  }
+  tools() {
+    return this.pcReady ? [...TOOLS, ...PC_TOOLS] : TOOLS;
+  }
+  system() {
+    return this.pcReady ? `${SYSTEM}\n\n${BEYOND_SCREEN}` : SYSTEM;
+  }
+
+  /** @param {string} name @param {any} input */
+  pcTool(name, input) {
+    if (!this.pcReady) return `${name} isn't available here.`;
+    const dataDir = /** @type {string} */ (this.ui.dataDir);
+    return runPcTool(name, input, {
+      places: placesHere(/** @type {string} */ (this.ui.documentsDir), dataDir),
+      undoDir: path.join(dataDir, "undo"),
+      ask: (summary, note) => askUser(summary, this.asking({ note })),
+      status: (text) => this.ui.status(text),
+      signal: this.abort?.signal,
+    });
+  }
+
   // One model turn, on the provider this conversation started with. Streamed so a plate with a motion sequence can
   // run long without the request timing out.
   /** @returns {Promise<{ content: any[], stop_reason: string | null, usage?: any }>} */
@@ -753,14 +781,15 @@ export class Brain {
       const caps = capsOf(this.provider, this.ui.baseURL, this.model);
       if (caps.tools === false) throw new ProviderError("no_tools", 400, `${this.model} can't use tools.`);
       const blind = caps.vision === false;
+      const tools = this.tools();
       return chatTurn({
         provider: this.provider,
         baseURL: this.ui.baseURL,
         key: this.ui.apiKey ?? "",
         model: this.model,
         effort: this.effort,
-        system: blind ? `${SYSTEM}\n\n${BLIND}` : SYSTEM,
-        tools: blind ? TOOLS.filter((t) => t.name !== "screenshot") : TOOLS,
+        system: blind ? `${this.system()}\n\n${BLIND}` : this.system(),
+        tools: blind ? tools.filter((t) => t.name !== "screenshot") : tools,
         messages: this.messages,
         maxTokens: 32000,
         signal: this.abort.signal,
@@ -775,8 +804,8 @@ export class Brain {
           cache_control: { type: "ephemeral" },
           betas: ["server-side-fallback-2026-07-01"],
           fallbacks: "default",
-          system: SYSTEM,
-          tools: TOOLS,
+          system: this.system(),
+          tools: this.tools(),
           messages: this.messages,
         },
         { signal: this.abort.signal },
@@ -844,6 +873,7 @@ export class Brain {
   }
 
   async runTool(name, input) {
+    if (PC_TOOL_NAMES.has(name)) return this.pcTool(name, input);
     switch (name) {
       case "look":
         this.ui.status("Looking…");
