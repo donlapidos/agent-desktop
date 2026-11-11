@@ -49,11 +49,25 @@ test("a still plate runs no script at all", () => {
   const html = render(plate());
   assert.match(html, /Content-Security-Policy" content="default-src 'none'/);
   assert.doesNotMatch(html, /script-src/);
-  assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /<script\b/i);
 });
 
 test("a plate with motion admits exactly one script, by hash", () => {
   const html = render(plate({ motion: { scenes: [{ svg: '<svg viewBox="0 0 600 340"><circle r="4"/></svg>', narration: "Watch it move.", seconds: 4 }] } }));
   assert.match(html, /script-src 'sha256-[A-Za-z0-9+/=]+'/);
-  assert.equal(html.match(/<script>/g)?.length, 1);
+  assert.equal(html.match(/<script\b/gi)?.length, 1);
+});
+
+test("pieces left by one removal can't join into a script, a handler or a link", async () => {
+  const { sanitizeSvg } = await import("../src/explainer.js");
+  // Removing the inner tag leaves "<script>": only another pass catches it.
+  const script = sanitizeSvg('<svg><scr<script>ipt>alert(1)<circle r="3"/></svg>');
+  assert.doesNotMatch(script, /<script\b/i);
+  const handler = sanitizeSvg('<svg><circle o<script>nclick="alert(1)" r="3"/></svg>');
+  assert.doesNotMatch(handler, /\son\w+\s*=/i, "no handler joined back together");
+  assert.match(handler, /<circle/, "the drawing itself stays");
+  const link = sanitizeSvg('<svg><a hr<a></a>ef="https://evil.example">x</a><rect width="4" height="4"/></svg>');
+  assert.doesNotMatch(link, /<a\b/i);
+  assert.doesNotMatch(link, /href\s*=/i);
+  assert.match(link, /<rect/);
 });

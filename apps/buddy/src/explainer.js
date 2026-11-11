@@ -64,10 +64,23 @@ const BUDDY_MARK = `<svg width="14" height="14" viewBox="0 0 22 22" aria-hidden=
 export const escapeHtml = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-// Model SVG may draw anything, but may not run, load or navigate.
+// Model SVG may draw anything, but may not run, load or navigate. The removals repeat until nothing changes, so
+// pieces left by one removal can't join into something the pass would have removed ("<scr<script></script>ipt>").
 export function sanitizeSvg(svg) {
   const s = String(svg ?? "").trim();
   if (!/^<svg[\s>]/i.test(s)) return "";
+  let out = s;
+  for (let pass = 0; pass < 10; pass++) {
+    const next = sanitizeOnce(out);
+    if (next === out) return out;
+    out = next;
+  }
+  // Still changing after ten passes: nothing a plate needs looks like that.
+  return "";
+}
+
+/** @param {string} s */
+function sanitizeOnce(s) {
   return s
     .replace(/<(script|style|foreignObject|iframe|object|embed|a)\b[\s\S]*?<\/\1\s*>/gi, "")
     .replace(/<\/?(script|style|foreignObject|iframe|object|embed|a|image|link|meta)\b[^>]*>/gi, "")
