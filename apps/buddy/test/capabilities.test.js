@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Brain, setBrainDefaults } from "../src/brain.js";
-import { capsOf, chatTurn, describeModels, familyCaps, useCapsStore, verdict, withoutImages } from "../src/providers.js";
+import { RECHECK_MS, SEEN_WINDOW_MS, capsOf, chatTurn, describeModels, familyCaps, learnCaps, useCapsStore, verdict, withoutImages } from "../src/providers.js";
 
 const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
 const LOCAL = "http://127.0.0.1:11434/v1";
@@ -51,7 +51,7 @@ test("Ollama, LM Studio and OpenRouter say what their models can do, and Buddy r
   assert.equal(verdict(capsOf("ollama", LOCAL, "gemma3:4b")), "no_tools", "and come back after a restart");
 });
 
-test("a model that refuses images is remembered as blind; the turn goes on without them", async () => {
+test("a model that refuses images twice is remembered as blind; each turn goes on without them", async () => {
   freshStore();
   const bodies = [];
   const fetchImpl = async (_url, init) => {
@@ -65,9 +65,35 @@ test("a model that refuses images is remembered as blind; the turn goes on witho
   assert.deepEqual(reply.content, [{ type: "text", text: "I read the window instead." }]);
   assert.equal(bodies.length, 2);
   assert.match(JSON.stringify(bodies[1].messages), /can't see images/);
-  assert.equal(capsOf("lmstudio", "http://localhost:1234/v1", "phi-4").vision, false);
+  assert.notEqual(capsOf("lmstudio", "http://localhost:1234/v1", "phi-4").vision, false, "one refusal isn't enough to believe it");
   await chatTurn(turn);
-  assert.equal(bodies.length, 3, "next time the images are left out up front");
+  assert.equal(bodies.length, 4, "so the next turn tries images again, and is refused again");
+  assert.equal(capsOf("lmstudio", "http://localhost:1234/v1", "phi-4").vision, false, "twice is");
+  await chatTurn(turn);
+  assert.equal(bodies.length, 5, "from then on the images are left out up front");
+});
+
+test("a can't learned in use is retried after a few days; one refusal long ago doesn't add to a new one", () => {
+  freshStore();
+  const now = Date.now();
+  learnCaps(LOCAL, "m", { vision: false }, "use", now - SEEN_WINDOW_MS - 1000);
+  learnCaps(LOCAL, "m", { vision: false }, "use", now);
+  assert.notEqual(capsOf("ollama", LOCAL, "m").vision, false, "refusals days apart are two separate first times");
+  const saved = [];
+  useCapsStore({ [`${LOCAL}|old`]: { vision: false, until: { vision: Date.now() - 1000 } }, [`${LOCAL}|new`]: { vision: false, until: { vision: Date.now() + RECHECK_MS } }, [`${LOCAL}|told`]: { vision: false } }, (e) => saved.push(e));
+  assert.notEqual(capsOf("ollama", LOCAL, "old").vision, false, "past its recheck time: tried again");
+  assert.equal(capsOf("ollama", LOCAL, "new").vision, false, "still within it");
+  assert.equal(capsOf("ollama", LOCAL, "told").vision, false, "what a server reported has no recheck time");
+  learnCaps(LOCAL, "new", { vision: true }, "reported");
+  assert.equal(capsOf("ollama", LOCAL, "new").vision, true, "and a server's word replaces a guess from use");
+});
+
+test("calling a tool clears a doubt about tools at once", () => {
+  freshStore();
+  learnCaps(LOCAL, "m", { tools: false }, "use");
+  learnCaps(LOCAL, "m", { tools: true }, "use");
+  learnCaps(LOCAL, "m", { tools: false }, "use");
+  assert.notEqual(capsOf("ollama", LOCAL, "m").tools, false, "the count started over after it worked");
 });
 
 test("a model that refuses tools says so, and isn't confused with a refused setting", async () => {
@@ -75,7 +101,9 @@ test("a model that refuses tools says so, and isn't confused with a refused sett
   const noTools = async () => json({ error: { message: "registry.ollama.ai/library/gemma3:4b does not support tools" } }, 400);
   const turn = { provider: /** @type {const} */ ("ollama"), baseURL: LOCAL, key: "", model: "gemma3:4b", effort: "low", system: "s", tools: [{ name: "look", description: "Look", input_schema: { type: "object" } }], messages: [{ role: "user", content: "hi" }], maxTokens: 50 };
   await assert.rejects(chatTurn({ ...turn, fetchImpl: noTools }), (e) => e.kind === "no_tools");
-  assert.equal(capsOf("ollama", LOCAL, "gemma3:4b").tools, false);
+  assert.notEqual(capsOf("ollama", LOCAL, "gemma3:4b").tools, false, "said once: tried again next time");
+  await assert.rejects(chatTurn({ ...turn, fetchImpl: noTools }), (e) => e.kind === "no_tools");
+  assert.equal(capsOf("ollama", LOCAL, "gemma3:4b").tools, false, "said twice: believed");
   freshStore();
   let calls = 0;
   const reasoning = async () => (++calls === 1 ? json({ error: { message: "Function tools with reasoning_effort are not supported for this model." } }, 400) : said("ok"));

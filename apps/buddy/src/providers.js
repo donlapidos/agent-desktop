@@ -109,7 +109,17 @@ export async function listModels(/** @type {ProviderId} */ provider, /** @type {
 /** @typedef {"good" | "no_images" | "no_tools" | "unknown"} Verdict */
 
 /** @typedef {{ passed: number, total: number, avgMs: number, at: string }} Tested  the last model check (evals.js) */
-/** @typedef {{ tools?: boolean, vision?: boolean, tested?: Tested }} Known */
+/**
+ * What Buddy knows about one model. `tools`/`vision` are facts; one learned from a refusal in use carries `until`
+ * (when Buddy tries again) for it, and a refusal seen once is only counted in `seen` (it isn't a fact yet).
+ * @typedef {{ tools?: boolean, vision?: boolean, tested?: Tested, until?: Partial<Record<CapName, number>>, seen?: Partial<Record<CapName, { count: number, at: number }>> }} Known
+ * @typedef {"tools" | "vision"} CapName
+ */
+// A refusal in use is believed when it happens twice within this long, and then only until this long has passed: one
+// odd error (an image too big, a server having a bad minute) mustn't disable a model's tools or images for good.
+export const SEEN_WINDOW_MS = 3 * 24 * 3600_000;
+export const RECHECK_MS = 3 * 24 * 3600_000;
+const CAP_NAMES = /** @type {const} */ (["tools", "vision"]);
 /** @type {Map<string, Known>} */
 const known = new Map();
 /** @type {((entries: Record<string, Known>) => void) | null} */
@@ -123,7 +133,14 @@ export function useCapsStore(/** @type {Record<string, any>} */ entries, /** @ty
     if (!v || typeof v !== "object") continue;
     const t = v.tested;
     const tested = t && Number.isInteger(t.passed) && Number.isInteger(t.total) && t.total > 0 ? { tested: { passed: t.passed, total: t.total, avgMs: Number(t.avgMs) || 0, at: String(t.at ?? "") } } : {};
-    known.set(k, { ...(typeof v.tools === "boolean" ? { tools: v.tools } : {}), ...(typeof v.vision === "boolean" ? { vision: v.vision } : {}), ...tested });
+    /** @type {Known} */
+    const entry = { ...tested };
+    for (const cap of CAP_NAMES) {
+      if (typeof v[cap] === "boolean") entry[cap] = v[cap];
+      if (Number.isFinite(v.until?.[cap])) (entry.until ??= {})[cap] = v.until[cap];
+      if (Number.isInteger(v.seen?.[cap]?.count) && Number.isFinite(v.seen?.[cap]?.at)) (entry.seen ??= {})[cap] = { count: v.seen[cap].count, at: v.seen[cap].at };
+    }
+    known.set(k, entry);
   }
   saveKnown = save;
 }
@@ -138,13 +155,37 @@ export function noteTested(/** @type {string | undefined} */ baseURL, /** @type 
 /** @returns {Tested | null} */
 export const testedOf = (/** @type {string | undefined} */ baseURL, /** @type {string} */ model) => known.get(capsKey(baseURL, model))?.tested ?? null;
 
-/** Records what a model turned out to be able, or not able, to do. Unknowns (null) change nothing. */
-export function learnCaps(/** @type {string | undefined} */ baseURL, /** @type {string} */ model, /** @type {{ tools?: boolean | null, vision?: boolean | null }} */ caps) {
+/**
+ * Records what a model can or can't do. What its server reports ("reported") is believed at once. In use, a "can"
+ * (it called a tool) is too, but a "can't" (a refusal) only counts once it happens twice within SEEN_WINDOW_MS, and
+ * then stands for RECHECK_MS before Buddy tries again. Unknowns (null) change nothing.
+ * @param {string | undefined} baseURL @param {string} model @param {{ tools?: boolean | null, vision?: boolean | null }} caps
+ * @param {"reported" | "use"} [how] @param {number} [now]
+ */
+export function learnCaps(baseURL, model, caps, how = "reported", now = Date.now()) {
   const k = capsKey(baseURL, model);
   const before = known.get(k) ?? {};
-  const next = { ...before };
-  if (typeof caps.tools === "boolean") next.tools = caps.tools;
-  if (typeof caps.vision === "boolean") next.vision = caps.vision;
+  /** @type {Known} */
+  const next = { ...before, until: { ...(before.until ?? {}) }, seen: { ...(before.seen ?? {}) } };
+  for (const cap of CAP_NAMES) {
+    const v = caps[cap];
+    if (typeof v !== "boolean") continue;
+    if (how === "reported" || v) {
+      next[cap] = v;
+      delete next.until[cap];
+      delete next.seen[cap];
+      continue;
+    }
+    const last = next.seen[cap];
+    const count = last && now - last.at < SEEN_WINDOW_MS ? last.count + 1 : 1;
+    if (count >= 2) {
+      next[cap] = false;
+      next.until[cap] = now + RECHECK_MS;
+      delete next.seen[cap];
+    } else next.seen[cap] = { count, at: now };
+  }
+  if (!Object.keys(next.until ?? {}).length) delete next.until;
+  if (!Object.keys(next.seen ?? {}).length) delete next.seen;
   if (JSON.stringify(next) === JSON.stringify(before)) return;
   known.set(k, next);
   saveKnown?.(Object.fromEntries(known));
@@ -166,7 +207,9 @@ export function familyCaps(/** @type {ProviderId} */ provider, /** @type {string
 export function capsOf(/** @type {ProviderId} */ provider, /** @type {string | undefined} */ baseURL, /** @type {string} */ model) {
   const learned = known.get(capsKey(baseURL, model)) ?? {};
   const family = familyCaps(provider, model);
-  return { tools: learned.tools ?? family.tools, vision: learned.vision ?? family.vision };
+  // A fact learned in use stands until its recheck time; then the model gets another try.
+  const fact = (/** @type {CapName} */ cap) => (learned.until?.[cap] != null && Date.now() >= learned.until[cap] ? undefined : learned[cap]);
+  return { tools: fact("tools") ?? family.tools, vision: fact("vision") ?? family.vision };
 }
 
 /** @returns {Verdict} */
@@ -509,7 +552,7 @@ export async function chatTurn({ provider, key, model, signal, baseURL = PROVIDE
     );
     if (res.ok) {
       const reply = await (responses ? readResponses(res) : readStream(res));
-      if (reply.content.some((b) => b.type === "tool_use")) learnCaps(baseURL, model, { tools: true });
+      if (reply.content.some((b) => b.type === "tool_use")) learnCaps(baseURL, model, { tools: true }, "use");
       return reply;
     }
     const err = await providerError(res);
@@ -519,10 +562,10 @@ export async function chatTurn({ provider, key, model, signal, baseURL = PROVIDE
       drop.add(field);
       refused.set(memo, drop);
     } else if (REFUSES.test(err.message) && ABOUT_IMAGES.test(err.message) && hasImages(sent)) {
-      learnCaps(baseURL, model, { vision: false });
+      learnCaps(baseURL, model, { vision: false }, "use");
       sent = withoutImages(sent);
     } else if (REFUSES.test(err.message) && ABOUT_TOOLS.test(err.message) && !/reasoning/i.test(err.message) && rest.tools.length) {
-      learnCaps(baseURL, model, { tools: false });
+      learnCaps(baseURL, model, { tools: false }, "use");
       throw new ProviderError("no_tools", err.status, err.message);
     } else throw err;
   }
