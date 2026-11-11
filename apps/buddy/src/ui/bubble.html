@@ -178,6 +178,9 @@
     confirmAt = performance.now();
   });
 
+  // Nothing waits any more (answered elsewhere, or the asker stopped): the card comes down.
+  window.buddy.onConfirmClear(() => $("confirm").classList.remove("on"));
+
   $("confirm").addEventListener("pointerdown", (e) => console.log("TRACE press on approval: " + (e.target.dataset?.d || e.target.tagName) + " open=" + document.body.classList.contains("open")));
   $("confirm").addEventListener("click", (e) => {
     const d = e.target.dataset?.d;

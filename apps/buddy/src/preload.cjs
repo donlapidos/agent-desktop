@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("buddy", {
   onStatus: on("status"),
   onReply: on("reply"),
   onConfirm: on("confirm"),
+  onConfirmClear: on("confirm-clear"),
   onCursor: on("cursor"),
   onPoint: on("point"),
   onRelease: on("release"),

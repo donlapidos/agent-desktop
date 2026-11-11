@@ -34,7 +34,7 @@ const issued = new WeakSet();
  * How to ask. `standing` is the answer's "Allow for this task": once true, later requests in the same answer pass
  * unasked. `policy` is the user's Agents settings; without one, every action is asked about.
  * @typedef {{
- *   confirm: (summary: string, bounds: import("./geometry.js").PhysicalRect | null, note?: string) => Promise<Decision | string>,
+ *   confirm: (summary: string, bounds: import("./geometry.js").PhysicalRect | null, note?: string, signal?: AbortSignal) => Promise<Decision | string>,
  *   bounds?: import("./geometry.js").PhysicalRect | null,
  *   note?: string,
  *   standing: { allowed: boolean },

@@ -36,6 +36,7 @@
     "src/evals.js",
     "src/providers.js",
     "src/pc-tools.js",
-    "src/activity.js"
+    "src/activity.js",
+    "src/approval-queue.js"
   ]
 }

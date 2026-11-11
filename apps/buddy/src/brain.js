@@ -846,7 +846,8 @@ export class Brain {
    * @returns {import("./approvals.js").Ask}
    */
   asking({ ref = null, note } = {}) {
-    return { confirm: (...a) => this.ui.confirm(...a), bounds: ref ? this.bounds.get(ref) ?? null : null, note, standing: this.standing, policy: agentPolicy ?? undefined };
+    // The answer's abort signal goes along: a stopped answer withdraws its request from the card.
+    return { confirm: (summary, bounds, note) => this.ui.confirm(summary, bounds, note, this.abort?.signal), bounds: ref ? this.bounds.get(ref) ?? null : null, note, standing: this.standing, policy: agentPolicy ?? undefined };
   }
 
   // Everything that operates the computer comes through here: the user's OK yields a slip, and only the slip runs

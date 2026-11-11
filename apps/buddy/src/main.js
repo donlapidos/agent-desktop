@@ -13,6 +13,7 @@ import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, ta
 import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, noteTested, providerForKey, testedOf, useCapsStore, verdict } from "./providers.js";
 import { CASES, runEvals } from "./evals.js";
 import { createActivity } from "./activity.js";
+import { createApprovalQueue } from "./approval-queue.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
@@ -81,12 +82,10 @@ let islandText; // what the island says, so it can be re-sent when a shortcut la
 let settings = normalizeSettings({}); // loaded from disk once the app is ready
 let saying = "Speaking"; // the island's label while Buddy reads a reply aloud
 const overlays = new Map();
-// What Buddy is doing (see modes.js). `approval` is set while a "working" answer waits for the user's OK.
+// What Buddy is doing (see modes.js). Requests waiting for the user's OK are in `approvals` (approval-queue.js).
 /** @typedef {import("./modes.js").Mode} Mode */
 /** @type {Mode} */
 let mode = "idle";
-/** @type {((decision: string) => void) | null} */
-let approval = null;
 
 // The mode as it is now. Code that awaited something re-checks with this, because a hotkey or the bubble may have
 // moved Buddy on in the meantime (the checker otherwise assumes `mode` can't change across an await).
@@ -963,11 +962,13 @@ ipcMain.handle("set-key", async (_e, key) => {
   return { ok: !error && !!brain, error };
 });
 
+// Stop or Esc in the bubble. While the bubble's own answer runs, that answer stops (and withdraws its request on the
+// card); otherwise the card on show is for an AI app using Buddy, and Stop says no to it.
 ipcMain.on("cancel", () => {
   voice?.cancelListening();
   voice?.hush();
-  brain?.cancel();
-  answerApproval("deny");
+  if (mode === "working") brain?.cancel();
+  else answerApproval("deny");
 });
 ipcMain.on("reset", () => {
   brain?.reset();
@@ -978,7 +979,7 @@ ipcMain.on("hide", () => {
   hideBubble();
 });
 ipcMain.on("confirm-reply", (_e, decision) => {
-  trace({ kind: "confirm-reply", decision, waiting: !!approval });
+  trace({ kind: "confirm-reply", decision, waiting: approvals.size() });
   answerApproval(decision);
 });
 let islandHovered = false;
@@ -1017,34 +1018,44 @@ ipcMain.on("task-peek", (_e, id) => {
   peekTimer = setInterval(refresh, PEEK_EVERY_MS);
 });
 
-// `summary` says exactly what will happen; `note` is Claude's own description, shown smaller under it.
-/** @param {string} summary @param {PhysicalRect | null} bounds @param {string} [note] @returns {Promise<string>} */
-function confirm(summary, bounds, note) {
-  trace({ kind: "confirm-shown", bubbleVisible: bubble.isVisible(), focusable: bubble.isFocusable(), bounds: bubble.getBounds() });
-  if (bounds) point(bounds, summary);
-  showBubble({ focus: false });
-  bubble.webContents.send("confirm", { summary, note });
-  setIsland("confirm", `Waiting for your OK: ${summary}`);
-  return new Promise((resolve) => {
-    approval = resolve;
-  });
+// The approval card. Buddy's own chat and the AI apps using Buddy can each be waiting for an OK at once: the card shows
+// the oldest; a request whose asker stops (its signal) is withdrawn, and the card moves on or comes down.
+/** @type {ReturnType<typeof createApprovalQueue<PhysicalRect>>} */
+const approvals = createApprovalQueue({
+  show: ({ summary, bounds, note }) => {
+    trace({ kind: "confirm-shown", bubbleVisible: bubble.isVisible(), focusable: bubble.isFocusable(), bounds: bubble.getBounds(), waiting: approvals?.size() ?? 1 });
+    if (bounds) point(bounds, summary);
+    showBubble({ focus: false });
+    bubble.webContents.send("confirm", { summary, note });
+    setIsland("confirm", `Waiting for your OK: ${summary}`);
+  },
+  clear: () => {
+    bubble.webContents.send("confirm-clear");
+    if (mode === "working") setIsland("busy", "Working…");
+    else restIsland();
+  },
+  trace,
+});
+const waitingForOk = () => approvals.size() > 0;
+
+// `summary` says exactly what will happen; `note` is the model's own description, shown smaller under it. `signal` is
+// the asker's: when it stops, its request is withdrawn as "deny".
+/** @param {string} summary @param {PhysicalRect | null} bounds @param {string} [note] @param {AbortSignal} [signal] @returns {Promise<string>} */
+function confirm(summary, bounds, note, signal) {
+  return approvals.ask(summary, bounds, note, signal);
 }
 
-// The one way out of waiting for an OK, whether answered on the card or cancelled with Esc or Stop.
+// The user answered the card (or pressed Esc on it): settles the request it shows.
 function answerApproval(decision) {
-  const resolve = approval;
-  approval = null;
-  if (!resolve) return;
-  resolve(decision);
+  if (!approvals.answer(decision)) return;
   releaseFocus(); // the click on the card activated the bubble; the user's app gets the keyboard back
-  setIsland("busy", "Working…");
 }
 
 // When the bubble's own conversation starts guiding, the bubble folds back into the island: the pointer and its
 // caption carry the step, and the bubble would otherwise sit over the ribbon or dialog they need to click.
 /** @param {PhysicalRect} bounds @param {string} caption */
 function guidePoint(bounds, caption) {
-  if (mode === "working" && bubble.isVisible() && !approval) hideBubble();
+  if (mode === "working" && bubble.isVisible() && !waitingForOk()) hideBubble();
   // In a spoken conversation Buddy says each step as it points, the way a person beside you would.
   if (caption && talksBack(spokenTurn)) voice.say(caption);
   return point(bounds, caption);
@@ -1300,7 +1311,7 @@ async function runForClaude(name, input, signal, client) {
     return name === "get_marks" ? marksForClaude() : await claudeBrain.runTool(name, input);
   } finally {
     setTimeout(() => {
-      if (mode === "idle" && !approval && Date.now() - claudeLastCall > 1000) restIsland();
+      if (mode === "idle" && !waitingForOk() && Date.now() - claudeLastCall > 1000) restIsland();
     }, 1500);
   }
 }
@@ -1352,7 +1363,7 @@ function startClaudeBridge() {
     onClients: (n) => {
       trace({ kind: "bridge-clients", n });
       // Say so once when a chat starts using Buddy; tool calls then show on the island as "Codex: …" and so on.
-      if (n > claudeSessions && mode === "idle" && !approval) setIsland("done", "Your AI app is using Buddy");
+      if (n > claudeSessions && mode === "idle" && !waitingForOk()) setIsland("done", "Your AI app is using Buddy");
       claudeSessions = n;
     },
   });

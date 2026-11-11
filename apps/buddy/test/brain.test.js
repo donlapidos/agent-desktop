@@ -37,7 +37,8 @@ test("a declined action reports so, and the card pointed at the element with Cla
   const { b, cards } = brain();
   const result = await b.act({ action: "type", ref: "@s1:e1", text: "hello", summary: "Click Save" });
   assert.equal(result, "The user declined.");
-  assert.deepEqual(cards, [['Type "hello" into "Search" (textfield)', { x: 10, y: 20, width: 200, height: 30 }, "Click Save"]]);
+  assert.deepEqual(cards.map((c) => c.slice(0, 3)), [['Type "hello" into "Search" (textfield)', { x: 10, y: 20, width: 200, height: 30 }, "Click Save"]]);
+  assert.ok(cards[0][3] === undefined || cards[0][3] instanceof AbortSignal, "the asker's signal goes along, so a stopped answer withdraws its card");
 });
 
 test("moving windows and opening apps ask first", async () => {
