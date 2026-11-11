@@ -54,6 +54,8 @@
 * The island said "Listening" with the microphone off; it now says "Ready". What it shows is worked out in one place.
 * One odd refusal no longer marks a model as unable to use tools or images for good.
 * The timing log stays under about 10 MB and keeps text short.
+* After an approval, the keyboard goes back to your app even when the bubble had just been closed and reopened.
+* A test copy of Buddy no longer turns on start with Windows for itself.
 
 ### Under the hood
 

@@ -139,8 +139,9 @@ document. CI (`.github/workflows/buddy.yml`) runs `npm run check` and `npm test`
 `npm run e2e` runs the real app end to end, each check in a separate test copy with its own data folder (your Buddy,
 settings and files are left alone): **files** (a scripted model asks for a file; the approval card is clicked; the file
 is made, listed in Activity and undone; another window can't answer the card), **tasks**, **settings** (including a
-key that must stay with its server), **explainer** and **voice**. Any check whose copy logged a refused mode or
-task-state change fails. `npm run e2e -- --interactive` adds the marker (a full-screen freeze frame) and the approval
+key that must stay with its server), **explainer**, **voice**, and **firstrun** (a plain test copy must leave your
+startup entries and shortcuts as they were). Any check whose copy logged a refused mode or task-state change fails.
+`npm run e2e -- --exe "<path to Desktop Buddy.exe>"` runs them against a built or installed copy. `npm run e2e -- --interactive` adds the marker (a full-screen freeze frame) and the approval
 clicks below (it moves the mouse). Screenshots and logs go to `e2e-out/`.
 
 `npm run eval -- --provider openai --model <id>` runs the model check (seven real Buddy tasks, scored) from the
