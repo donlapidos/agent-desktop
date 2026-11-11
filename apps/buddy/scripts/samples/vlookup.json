@@ -1,0 +1,56 @@
+{
+  "common_name": "VLOOKUP",
+  "taxonomy": "Lookup function · Excel and Google Sheets",
+  "summary": "Finds a value in the first column of a table and hands back something from the same row.",
+  "figure": {
+    "svg": "<svg viewBox=\"0 0 600 340\"><text x=\"24\" y=\"55\" class=\"name\" style=\"font-size:22px\">=VLOOKUP(</text><rect x=\"150\" y=\"30\" width=\"60\" height=\"36\" rx=\"4\" class=\"p3s\"/><text x=\"180\" y=\"55\" text-anchor=\"middle\" class=\"name\" style=\"font-size:20px\">A2</text><text x=\"214\" y=\"55\" class=\"name\" style=\"font-size:20px\">,</text><rect x=\"224\" y=\"30\" width=\"134\" height=\"36\" rx=\"4\" class=\"p1s\"/><text x=\"291\" y=\"55\" text-anchor=\"middle\" class=\"name\" style=\"font-size:20px\">Prices!A:C</text><text x=\"362\" y=\"55\" class=\"name\" style=\"font-size:20px\">,</text><rect x=\"372\" y=\"30\" width=\"38\" height=\"36\" rx=\"4\" class=\"p2s\"/><text x=\"391\" y=\"55\" text-anchor=\"middle\" class=\"name\" style=\"font-size:20px\">3</text><text x=\"414\" y=\"55\" class=\"name\" style=\"font-size:20px\">,</text><rect x=\"424\" y=\"30\" width=\"80\" height=\"36\" rx=\"4\" class=\"p4s\"/><text x=\"464\" y=\"55\" text-anchor=\"middle\" class=\"name\" style=\"font-size:20px\">FALSE</text><text x=\"510\" y=\"55\" class=\"name\" style=\"font-size:22px\">)</text><use href=\"#m1u\" x=\"169\" y=\"72\" width=\"22\" height=\"44\"/><use href=\"#m2u\" x=\"280\" y=\"72\" width=\"22\" height=\"44\"/><use href=\"#m3u\" x=\"380\" y=\"72\" width=\"22\" height=\"44\"/><use href=\"#m4u\" x=\"453\" y=\"72\" width=\"22\" height=\"44\"/><rect x=\"150\" y=\"146\" width=\"300\" height=\"144\" class=\"p1s\"/><rect x=\"350\" y=\"174\" width=\"100\" height=\"116\" class=\"p2s\"/><rect x=\"250\" y=\"174\" width=\"100\" height=\"116\" class=\"hatch\" opacity=\"0.7\"/><rect x=\"150\" y=\"146\" width=\"300\" height=\"28\" class=\"plate-fill\" opacity=\"0.55\"/><text x=\"162\" y=\"165\" class=\"small\">Item</text><text x=\"262\" y=\"165\" class=\"small\">Size</text><text x=\"362\" y=\"165\" class=\"small\">Price</text><path d=\"M150 174 H450 M150 203 H450 M150 232 H450 M150 261 H450 M250 146 V290 M350 146 V290\" class=\"leader\"/><rect x=\"150\" y=\"146\" width=\"300\" height=\"144\" class=\"outline\"/><text x=\"162\" y=\"194\" class=\"num\">Apple</text><text x=\"262\" y=\"194\" class=\"num\">Large</text><text x=\"362\" y=\"194\" class=\"num\">$0.90</text><text x=\"162\" y=\"223\" class=\"num\">Pear</text><text x=\"262\" y=\"223\" class=\"num\">Small</text><text x=\"362\" y=\"223\" class=\"num\">$1.20</text><text x=\"162\" y=\"252\" class=\"num\">Plum</text><text x=\"262\" y=\"252\" class=\"num\">Small</text><text x=\"362\" y=\"252\" class=\"num\">$1.50</text><text x=\"162\" y=\"281\" class=\"num\">Fig</text><text x=\"262\" y=\"281\" class=\"num\">Medium</text><text x=\"362\" y=\"281\" class=\"num\">$2.10</text><rect x=\"150\" y=\"203\" width=\"300\" height=\"29\" class=\"outline\" style=\"stroke-width:2.4\"/><text x=\"22\" y=\"223\" class=\"label\">A2 = Pear</text><path d=\"M100 218 H144\" class=\"flow\"/><path d=\"M456 218 H494\" class=\"flow\"/><text x=\"500\" y=\"213\" class=\"label\">hands back</text><text x=\"500\" y=\"236\" class=\"label\">$1.20</text><text x=\"24\" y=\"262\" class=\"label-2\">only this</text><text x=\"24\" y=\"280\" class=\"label-2\">column is</text><text x=\"24\" y=\"298\" class=\"label-2\">ever searched</text><path d=\"M104 292 H172\" class=\"leader\" marker-end=\"url(#dot)\"/><text x=\"474\" y=\"268\" class=\"label-2\">column 3 of</text><text x=\"474\" y=\"286\" class=\"label-2\">the range</text><path d=\"M470 280 H442\" class=\"leader\" marker-end=\"url(#dot)\"/><circle r=\"6\" class=\"token\" opacity=\"0\"><animateMotion path=\"M126 218 L228 189 L228 218 L428 218 L486 218\" dur=\"5s\" begin=\"2.2s\" repeatCount=\"indefinite\" calcMode=\"linear\" keyPoints=\"0;0.27;0.344;0.344;0.852;1;1\" keyTimes=\"0;0.16;0.3;0.42;0.68;0.82;1\"/><animate attributeName=\"opacity\" values=\"0;1;1;0;0\" keyTimes=\"0;0.05;0.8;0.86;1\" dur=\"5s\" begin=\"2.2s\" repeatCount=\"indefinite\"/></circle></svg>",
+    "caption": "Each argument is washed in the color of the part of the table it controls; the hatched column is never read."
+  },
+  "field_marks": [
+    {
+      "label": "Lookup value",
+      "detail": "What you're searching for. Here, the item name sitting in A2."
+    },
+    {
+      "label": "Table range",
+      "detail": "Where to search. Its first column must hold the values you're matching against."
+    },
+    {
+      "label": "Column index",
+      "detail": "Which column to bring back, counted from the left edge of the range, starting at 1."
+    },
+    {
+      "label": "Match mode",
+      "detail": "FALSE means exact match. Leave it out and VLOOKUP quietly settles for a near miss."
+    }
+  ],
+  "habitat": [
+    "Price lists, rosters, inventories: any sheet that pulls details from a reference table",
+    "Older workbooks; it predates XLOOKUP by decades",
+    "Wherever one sheet looks up a code that lives in another"
+  ],
+  "behavior": [
+    "Reads the lookup value from A2",
+    "Scans the first column of Prices!A:C from the top",
+    "Stops at the first exact match",
+    "Counts across to column 3 and returns that cell"
+  ],
+  "similar": [
+    {
+      "name": "XLOOKUP",
+      "tell_apart": "Can look left as well as right, and defaults to exact match. Prefer it in Excel 365.",
+      "svg": "<svg viewBox=\"0 0 160 90\"><rect x=\"8\" y=\"6\" width=\"144\" height=\"54\" class=\"p1s\"/><rect x=\"104\" y=\"6\" width=\"48\" height=\"54\" class=\"p2s\"/><path d=\"M8 24 H152 M8 42 H152 M56 6 V60 M104 6 V60\" class=\"leader\"/><rect x=\"8\" y=\"6\" width=\"144\" height=\"54\" class=\"outline\"/><path d=\"M128 33 H20\" class=\"flow\"/><text x=\"80\" y=\"82\" text-anchor=\"middle\" class=\"label-2\">looks left too</text></svg>"
+    },
+    {
+      "name": "INDEX + MATCH",
+      "tell_apart": "Two functions doing one job; it survives columns being inserted.",
+      "svg": "<svg viewBox=\"0 0 160 90\"><rect x=\"8\" y=\"6\" width=\"40\" height=\"54\" class=\"p3s\"/><path d=\"M8 24 H48 M8 42 H48\" class=\"leader\"/><rect x=\"8\" y=\"6\" width=\"40\" height=\"54\" class=\"outline\"/><path d=\"M54 33 H96\" class=\"flow\"/><rect x=\"102\" y=\"6\" width=\"50\" height=\"54\" class=\"p1s\"/><path d=\"M102 24 H152 M102 42 H152\" class=\"leader\"/><rect x=\"102\" y=\"6\" width=\"50\" height=\"54\" class=\"outline\"/><text x=\"80\" y=\"82\" text-anchor=\"middle\" class=\"label-2\">find row, then fetch</text></svg>"
+    },
+    {
+      "name": "HLOOKUP",
+      "tell_apart": "The same idea turned on its side: it searches the first row.",
+      "svg": "<svg viewBox=\"0 0 160 90\"><rect x=\"8\" y=\"6\" width=\"144\" height=\"54\" class=\"p1s\"/><rect x=\"8\" y=\"6\" width=\"144\" height=\"18\" class=\"p3s\"/><path d=\"M8 24 H152 M8 42 H152 M56 6 V60 M104 6 V60\" class=\"leader\"/><rect x=\"8\" y=\"6\" width=\"144\" height=\"54\" class=\"outline\"/><path d=\"M14 15 H146\" class=\"flow\"/><text x=\"80\" y=\"82\" text-anchor=\"middle\" class=\"label-2\">searches the top row</text></svg>"
+    }
+  ],
+  "field_note": "Your cell D4 runs =VLOOKUP(A2, Prices!A:C, 3, FALSE), so it fills in Pear's price, $1.20. Insert a column in Prices and that 3 will quietly point at the wrong one."
+}

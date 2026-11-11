@@ -1,0 +1,834 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-05T14:43:10.789Z",
+  "title": "Design System: Desktop Buddy",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Sage Paper",
+        "canonical": "#f2f4f0",
+        "oklch": "oklch(96.5% 0.006 128.5)",
+        "tonalRamp": [
+          "oklch(15% 0.006 128.5)",
+          "oklch(26.4% 0.006 128.5)",
+          "oklch(37.9% 0.006 128.5)",
+          "oklch(49.3% 0.006 128.5)",
+          "oklch(60.7% 0.006 128.5)",
+          "oklch(72.1% 0.006 128.5)",
+          "oklch(83.6% 0.006 128.5)",
+          "oklch(95% 0.006 128.5)"
+        ]
+      },
+      "plate": {
+        "role": "neutral",
+        "displayName": "Plate Sage",
+        "canonical": "#e6eae3",
+        "oklch": "oklch(93.2% 0.01 131.4)",
+        "tonalRamp": [
+          "oklch(15% 0.01 131.4)",
+          "oklch(26.4% 0.01 131.4)",
+          "oklch(37.9% 0.01 131.4)",
+          "oklch(49.3% 0.01 131.4)",
+          "oklch(60.7% 0.01 131.4)",
+          "oklch(72.1% 0.01 131.4)",
+          "oklch(83.6% 0.01 131.4)",
+          "oklch(95% 0.01 131.4)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Field Ink",
+        "canonical": "#1a201c",
+        "oklch": "oklch(23.6% 0.012 156.2)",
+        "tonalRamp": [
+          "oklch(15% 0.012 156.2)",
+          "oklch(26.4% 0.012 156.2)",
+          "oklch(37.9% 0.012 156.2)",
+          "oklch(49.3% 0.012 156.2)",
+          "oklch(60.7% 0.012 156.2)",
+          "oklch(72.1% 0.012 156.2)",
+          "oklch(83.6% 0.012 156.2)",
+          "oklch(95% 0.012 156.2)"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Second Ink",
+        "canonical": "#4c5650",
+        "oklch": "oklch(44.2% 0.016 159.4)",
+        "tonalRamp": [
+          "oklch(15% 0.016 159.4)",
+          "oklch(26.4% 0.016 159.4)",
+          "oklch(37.9% 0.016 159.4)",
+          "oklch(49.3% 0.016 159.4)",
+          "oklch(60.7% 0.016 159.4)",
+          "oklch(72.1% 0.016 159.4)",
+          "oklch(83.6% 0.016 159.4)",
+          "oklch(95% 0.016 159.4)"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Pencil Grey",
+        "canonical": "#5a645e",
+        "oklch": "oklch(49.3% 0.016 159.5)",
+        "tonalRamp": [
+          "oklch(15% 0.016 159.5)",
+          "oklch(26.4% 0.016 159.5)",
+          "oklch(37.9% 0.016 159.5)",
+          "oklch(49.3% 0.016 159.5)",
+          "oklch(60.7% 0.016 159.5)",
+          "oklch(72.1% 0.016 159.5)",
+          "oklch(83.6% 0.016 159.5)",
+          "oklch(95% 0.016 159.5)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#cfd5cd",
+        "oklch": "oklch(86.6% 0.013 137.8)",
+        "tonalRamp": [
+          "oklch(15% 0.013 137.8)",
+          "oklch(26.4% 0.013 137.8)",
+          "oklch(37.9% 0.013 137.8)",
+          "oklch(49.3% 0.013 137.8)",
+          "oklch(60.7% 0.013 137.8)",
+          "oklch(72.1% 0.013 137.8)",
+          "oklch(83.6% 0.013 137.8)",
+          "oklch(95% 0.013 137.8)"
+        ]
+      },
+      "buddy-blue": {
+        "role": "primary",
+        "displayName": "Buddy Blue",
+        "canonical": "#2f7aff",
+        "oklch": "oklch(61% 0.212 260.9)",
+        "tonalRamp": [
+          "oklch(15% 0.066 260.9)",
+          "oklch(26.4% 0.108 260.9)",
+          "oklch(37.9% 0.15 260.9)",
+          "oklch(49.3% 0.192 260.9)",
+          "oklch(60.7% 0.155 260.9)",
+          "oklch(72.1% 0.113 260.9)",
+          "oklch(83.6% 0.071 260.9)",
+          "oklch(95% 0.028 260.9)"
+        ]
+      },
+      "mark-disc": {
+        "role": "primary",
+        "displayName": "Arrow Disc Blue",
+        "canonical": "#1f5fd6",
+        "oklch": "oklch(52% 0.194 261.5)",
+        "tonalRamp": [
+          "oklch(15% 0.066 261.5)",
+          "oklch(26.4% 0.108 261.5)",
+          "oklch(37.9% 0.15 261.5)",
+          "oklch(49.3% 0.192 261.5)",
+          "oklch(60.7% 0.155 261.5)",
+          "oklch(72.1% 0.113 261.5)",
+          "oklch(83.6% 0.071 261.5)",
+          "oklch(95% 0.028 261.5)"
+        ]
+      },
+      "mark-num": {
+        "role": "primary",
+        "displayName": "Arrow Numeral",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100% 0 89.9)",
+        "tonalRamp": [
+          "oklch(15% 0 89.9)",
+          "oklch(26.4% 0 89.9)",
+          "oklch(37.9% 0 89.9)",
+          "oklch(49.3% 0 89.9)",
+          "oklch(60.7% 0 89.9)",
+          "oklch(72.1% 0 89.9)",
+          "oklch(83.6% 0 89.9)",
+          "oklch(95% 0 89.9)"
+        ]
+      },
+      "moss": {
+        "role": "secondary",
+        "displayName": "Moss",
+        "canonical": "#557a45",
+        "oklch": "oklch(53.8% 0.089 136.8)",
+        "tonalRamp": [
+          "oklch(15% 0.066 136.8)",
+          "oklch(26.4% 0.089 136.8)",
+          "oklch(37.9% 0.089 136.8)",
+          "oklch(49.3% 0.089 136.8)",
+          "oklch(60.7% 0.089 136.8)",
+          "oklch(72.1% 0.089 136.8)",
+          "oklch(83.6% 0.071 136.8)",
+          "oklch(95% 0.028 136.8)"
+        ]
+      },
+      "moss-wash": {
+        "role": "secondary",
+        "displayName": "Moss Wash",
+        "canonical": "#d7e3cf",
+        "oklch": "oklch(90.1% 0.03 132.6)",
+        "tonalRamp": [
+          "oklch(15% 0.03 132.6)",
+          "oklch(26.4% 0.03 132.6)",
+          "oklch(37.9% 0.03 132.6)",
+          "oklch(49.3% 0.03 132.6)",
+          "oklch(60.7% 0.03 132.6)",
+          "oklch(72.1% 0.03 132.6)",
+          "oklch(83.6% 0.03 132.6)",
+          "oklch(95% 0.028 132.6)"
+        ]
+      },
+      "ochre": {
+        "role": "secondary",
+        "displayName": "Ochre",
+        "canonical": "#b9861c",
+        "oklch": "oklch(65.4% 0.128 79.7)",
+        "tonalRamp": [
+          "oklch(15% 0.066 79.7)",
+          "oklch(26.4% 0.108 79.7)",
+          "oklch(37.9% 0.128 79.7)",
+          "oklch(49.3% 0.128 79.7)",
+          "oklch(60.7% 0.128 79.7)",
+          "oklch(72.1% 0.113 79.7)",
+          "oklch(83.6% 0.071 79.7)",
+          "oklch(95% 0.028 79.7)"
+        ]
+      },
+      "ochre-wash": {
+        "role": "secondary",
+        "displayName": "Ochre Wash",
+        "canonical": "#f0e2bf",
+        "oklch": "oklch(91.5% 0.048 88.8)",
+        "tonalRamp": [
+          "oklch(15% 0.048 88.8)",
+          "oklch(26.4% 0.048 88.8)",
+          "oklch(37.9% 0.048 88.8)",
+          "oklch(49.3% 0.048 88.8)",
+          "oklch(60.7% 0.048 88.8)",
+          "oklch(72.1% 0.048 88.8)",
+          "oklch(83.6% 0.048 88.8)",
+          "oklch(95% 0.028 88.8)"
+        ]
+      },
+      "slate": {
+        "role": "secondary",
+        "displayName": "Slate",
+        "canonical": "#4a6377",
+        "oklch": "oklch(48.8% 0.044 242.9)",
+        "tonalRamp": [
+          "oklch(15% 0.044 242.9)",
+          "oklch(26.4% 0.044 242.9)",
+          "oklch(37.9% 0.044 242.9)",
+          "oklch(49.3% 0.044 242.9)",
+          "oklch(60.7% 0.044 242.9)",
+          "oklch(72.1% 0.044 242.9)",
+          "oklch(83.6% 0.044 242.9)",
+          "oklch(95% 0.028 242.9)"
+        ]
+      },
+      "slate-wash": {
+        "role": "secondary",
+        "displayName": "Slate Wash",
+        "canonical": "#d3dde6",
+        "oklch": "oklch(89.3% 0.016 245.1)",
+        "tonalRamp": [
+          "oklch(15% 0.016 245.1)",
+          "oklch(26.4% 0.016 245.1)",
+          "oklch(37.9% 0.016 245.1)",
+          "oklch(49.3% 0.016 245.1)",
+          "oklch(60.7% 0.016 245.1)",
+          "oklch(72.1% 0.016 245.1)",
+          "oklch(83.6% 0.016 245.1)",
+          "oklch(95% 0.016 245.1)"
+        ]
+      },
+      "plum": {
+        "role": "secondary",
+        "displayName": "Plum",
+        "canonical": "#8c4a78",
+        "oklch": "oklch(50.5% 0.107 339.7)",
+        "tonalRamp": [
+          "oklch(15% 0.066 339.7)",
+          "oklch(26.4% 0.107 339.7)",
+          "oklch(37.9% 0.107 339.7)",
+          "oklch(49.3% 0.107 339.7)",
+          "oklch(60.7% 0.107 339.7)",
+          "oklch(72.1% 0.107 339.7)",
+          "oklch(83.6% 0.071 339.7)",
+          "oklch(95% 0.028 339.7)"
+        ]
+      },
+      "plum-wash": {
+        "role": "secondary",
+        "displayName": "Plum Wash",
+        "canonical": "#ead6e4",
+        "oklch": "oklch(89.6% 0.029 336.5)",
+        "tonalRamp": [
+          "oklch(15% 0.029 336.5)",
+          "oklch(26.4% 0.029 336.5)",
+          "oklch(37.9% 0.029 336.5)",
+          "oklch(49.3% 0.029 336.5)",
+          "oklch(60.7% 0.029 336.5)",
+          "oklch(72.1% 0.029 336.5)",
+          "oklch(83.6% 0.029 336.5)",
+          "oklch(95% 0.028 336.5)"
+        ]
+      },
+      "rust": {
+        "role": "secondary",
+        "displayName": "Rust",
+        "canonical": "#a24d2f",
+        "oklch": "oklch(52.2% 0.121 39.6)",
+        "tonalRamp": [
+          "oklch(15% 0.066 39.6)",
+          "oklch(26.4% 0.108 39.6)",
+          "oklch(37.9% 0.121 39.6)",
+          "oklch(49.3% 0.121 39.6)",
+          "oklch(60.7% 0.121 39.6)",
+          "oklch(72.1% 0.113 39.6)",
+          "oklch(83.6% 0.071 39.6)",
+          "oklch(95% 0.028 39.6)"
+        ]
+      },
+      "rust-wash": {
+        "role": "secondary",
+        "displayName": "Rust Wash",
+        "canonical": "#efd8cd",
+        "oklch": "oklch(89.8% 0.03 47.3)",
+        "tonalRamp": [
+          "oklch(15% 0.03 47.3)",
+          "oklch(26.4% 0.03 47.3)",
+          "oklch(37.9% 0.03 47.3)",
+          "oklch(49.3% 0.03 47.3)",
+          "oklch(60.7% 0.03 47.3)",
+          "oklch(72.1% 0.03 47.3)",
+          "oklch(83.6% 0.03 47.3)",
+          "oklch(95% 0.028 47.3)"
+        ]
+      },
+      "paper-dark": {
+        "role": "neutral",
+        "displayName": "Sage Paper (dark mode)",
+        "canonical": "#131815",
+        "oklch": "oklch(20.3% 0.01 159.1)",
+        "tonalRamp": [
+          "oklch(15% 0.01 159.1)",
+          "oklch(26.4% 0.01 159.1)",
+          "oklch(37.9% 0.01 159.1)",
+          "oklch(49.3% 0.01 159.1)",
+          "oklch(60.7% 0.01 159.1)",
+          "oklch(72.1% 0.01 159.1)",
+          "oklch(83.6% 0.01 159.1)",
+          "oklch(95% 0.01 159.1)"
+        ]
+      },
+      "plate-dark": {
+        "role": "neutral",
+        "displayName": "Plate Sage (dark mode)",
+        "canonical": "#1b221d",
+        "oklch": "oklch(24.3% 0.014 154.2)",
+        "tonalRamp": [
+          "oklch(15% 0.014 154.2)",
+          "oklch(26.4% 0.014 154.2)",
+          "oklch(37.9% 0.014 154.2)",
+          "oklch(49.3% 0.014 154.2)",
+          "oklch(60.7% 0.014 154.2)",
+          "oklch(72.1% 0.014 154.2)",
+          "oklch(83.6% 0.014 154.2)",
+          "oklch(95% 0.014 154.2)"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "Field Ink (dark mode)",
+        "canonical": "#e5ebe6",
+        "oklch": "oklch(93.4% 0.009 150.7)",
+        "tonalRamp": [
+          "oklch(15% 0.009 150.7)",
+          "oklch(26.4% 0.009 150.7)",
+          "oklch(37.9% 0.009 150.7)",
+          "oklch(49.3% 0.009 150.7)",
+          "oklch(60.7% 0.009 150.7)",
+          "oklch(72.1% 0.009 150.7)",
+          "oklch(83.6% 0.009 150.7)",
+          "oklch(95% 0.009 150.7)"
+        ]
+      },
+      "ink-2-dark": {
+        "role": "neutral",
+        "displayName": "Second Ink (dark mode)",
+        "canonical": "#aab5ad",
+        "oklch": "oklch(76.2% 0.017 154.4)",
+        "tonalRamp": [
+          "oklch(15% 0.017 154.4)",
+          "oklch(26.4% 0.017 154.4)",
+          "oklch(37.9% 0.017 154.4)",
+          "oklch(49.3% 0.017 154.4)",
+          "oklch(60.7% 0.017 154.4)",
+          "oklch(72.1% 0.017 154.4)",
+          "oklch(83.6% 0.017 154.4)",
+          "oklch(95% 0.017 154.4)"
+        ]
+      },
+      "ink-3-dark": {
+        "role": "neutral",
+        "displayName": "Pencil Grey (dark mode)",
+        "canonical": "#8c968f",
+        "oklch": "oklch(66.3% 0.015 155.4)",
+        "tonalRamp": [
+          "oklch(15% 0.015 155.4)",
+          "oklch(26.4% 0.015 155.4)",
+          "oklch(37.9% 0.015 155.4)",
+          "oklch(49.3% 0.015 155.4)",
+          "oklch(60.7% 0.015 155.4)",
+          "oklch(72.1% 0.015 155.4)",
+          "oklch(83.6% 0.015 155.4)",
+          "oklch(95% 0.015 155.4)"
+        ]
+      },
+      "rule-dark": {
+        "role": "neutral",
+        "displayName": "Hairline (dark mode)",
+        "canonical": "#2c352f",
+        "oklch": "oklch(31.8% 0.016 156.2)",
+        "tonalRamp": [
+          "oklch(15% 0.016 156.2)",
+          "oklch(26.4% 0.016 156.2)",
+          "oklch(37.9% 0.016 156.2)",
+          "oklch(49.3% 0.016 156.2)",
+          "oklch(60.7% 0.016 156.2)",
+          "oklch(72.1% 0.016 156.2)",
+          "oklch(83.6% 0.016 156.2)",
+          "oklch(95% 0.016 156.2)"
+        ]
+      },
+      "buddy-blue-dark": {
+        "role": "primary",
+        "displayName": "Buddy Blue (dark mode)",
+        "canonical": "#6ea2ff",
+        "oklch": "oklch(71.7% 0.147 261.3)",
+        "tonalRamp": [
+          "oklch(15% 0.066 261.3)",
+          "oklch(26.4% 0.108 261.3)",
+          "oklch(37.9% 0.147 261.3)",
+          "oklch(49.3% 0.147 261.3)",
+          "oklch(60.7% 0.147 261.3)",
+          "oklch(72.1% 0.113 261.3)",
+          "oklch(83.6% 0.071 261.3)",
+          "oklch(95% 0.028 261.3)"
+        ]
+      },
+      "mark-disc-dark": {
+        "role": "primary",
+        "displayName": "Arrow Disc Blue (dark mode)",
+        "canonical": "#6ea2ff",
+        "oklch": "oklch(71.7% 0.147 261.3)",
+        "tonalRamp": [
+          "oklch(15% 0.066 261.3)",
+          "oklch(26.4% 0.108 261.3)",
+          "oklch(37.9% 0.147 261.3)",
+          "oklch(49.3% 0.147 261.3)",
+          "oklch(60.7% 0.147 261.3)",
+          "oklch(72.1% 0.113 261.3)",
+          "oklch(83.6% 0.071 261.3)",
+          "oklch(95% 0.028 261.3)"
+        ]
+      },
+      "mark-num-dark": {
+        "role": "primary",
+        "displayName": "Arrow Numeral (dark mode)",
+        "canonical": "#0b1a33",
+        "oklch": "oklch(22% 0.053 260)",
+        "tonalRamp": [
+          "oklch(15% 0.053 260)",
+          "oklch(26.4% 0.053 260)",
+          "oklch(37.9% 0.053 260)",
+          "oklch(49.3% 0.053 260)",
+          "oklch(60.7% 0.053 260)",
+          "oklch(72.1% 0.053 260)",
+          "oklch(83.6% 0.053 260)",
+          "oklch(95% 0.028 260)"
+        ]
+      },
+      "moss-dark": {
+        "role": "secondary",
+        "displayName": "Moss (dark mode)",
+        "canonical": "#8fb57c",
+        "oklch": "oklch(73.1% 0.09 135.5)",
+        "tonalRamp": [
+          "oklch(15% 0.066 135.5)",
+          "oklch(26.4% 0.09 135.5)",
+          "oklch(37.9% 0.09 135.5)",
+          "oklch(49.3% 0.09 135.5)",
+          "oklch(60.7% 0.09 135.5)",
+          "oklch(72.1% 0.09 135.5)",
+          "oklch(83.6% 0.071 135.5)",
+          "oklch(95% 0.028 135.5)"
+        ]
+      },
+      "moss-wash-dark": {
+        "role": "secondary",
+        "displayName": "Moss Wash (dark mode)",
+        "canonical": "#2a3a24",
+        "oklch": "oklch(32.7% 0.043 137.4)",
+        "tonalRamp": [
+          "oklch(15% 0.043 137.4)",
+          "oklch(26.4% 0.043 137.4)",
+          "oklch(37.9% 0.043 137.4)",
+          "oklch(49.3% 0.043 137.4)",
+          "oklch(60.7% 0.043 137.4)",
+          "oklch(72.1% 0.043 137.4)",
+          "oklch(83.6% 0.043 137.4)",
+          "oklch(95% 0.028 137.4)"
+        ]
+      },
+      "ochre-dark": {
+        "role": "secondary",
+        "displayName": "Ochre (dark mode)",
+        "canonical": "#e0b354",
+        "oklch": "oklch(78.9% 0.124 83.7)",
+        "tonalRamp": [
+          "oklch(15% 0.066 83.7)",
+          "oklch(26.4% 0.108 83.7)",
+          "oklch(37.9% 0.124 83.7)",
+          "oklch(49.3% 0.124 83.7)",
+          "oklch(60.7% 0.124 83.7)",
+          "oklch(72.1% 0.113 83.7)",
+          "oklch(83.6% 0.071 83.7)",
+          "oklch(95% 0.028 83.7)"
+        ]
+      },
+      "ochre-wash-dark": {
+        "role": "secondary",
+        "displayName": "Ochre Wash (dark mode)",
+        "canonical": "#3f3317",
+        "oklch": "oklch(32.7% 0.046 86.6)",
+        "tonalRamp": [
+          "oklch(15% 0.046 86.6)",
+          "oklch(26.4% 0.046 86.6)",
+          "oklch(37.9% 0.046 86.6)",
+          "oklch(49.3% 0.046 86.6)",
+          "oklch(60.7% 0.046 86.6)",
+          "oklch(72.1% 0.046 86.6)",
+          "oklch(83.6% 0.046 86.6)",
+          "oklch(95% 0.028 86.6)"
+        ]
+      },
+      "slate-dark": {
+        "role": "secondary",
+        "displayName": "Slate (dark mode)",
+        "canonical": "#8ea9be",
+        "oklch": "oklch(72.1% 0.043 241.6)",
+        "tonalRamp": [
+          "oklch(15% 0.043 241.6)",
+          "oklch(26.4% 0.043 241.6)",
+          "oklch(37.9% 0.043 241.6)",
+          "oklch(49.3% 0.043 241.6)",
+          "oklch(60.7% 0.043 241.6)",
+          "oklch(72.1% 0.043 241.6)",
+          "oklch(83.6% 0.043 241.6)",
+          "oklch(95% 0.028 241.6)"
+        ]
+      },
+      "slate-wash-dark": {
+        "role": "secondary",
+        "displayName": "Slate Wash (dark mode)",
+        "canonical": "#22303b",
+        "oklch": "oklch(30.2% 0.027 242.4)",
+        "tonalRamp": [
+          "oklch(15% 0.027 242.4)",
+          "oklch(26.4% 0.027 242.4)",
+          "oklch(37.9% 0.027 242.4)",
+          "oklch(49.3% 0.027 242.4)",
+          "oklch(60.7% 0.027 242.4)",
+          "oklch(72.1% 0.027 242.4)",
+          "oklch(83.6% 0.027 242.4)",
+          "oklch(95% 0.027 242.4)"
+        ]
+      },
+      "plum-dark": {
+        "role": "secondary",
+        "displayName": "Plum (dark mode)",
+        "canonical": "#cc8cba",
+        "oklch": "oklch(71.8% 0.098 337.4)",
+        "tonalRamp": [
+          "oklch(15% 0.066 337.4)",
+          "oklch(26.4% 0.098 337.4)",
+          "oklch(37.9% 0.098 337.4)",
+          "oklch(49.3% 0.098 337.4)",
+          "oklch(60.7% 0.098 337.4)",
+          "oklch(72.1% 0.098 337.4)",
+          "oklch(83.6% 0.071 337.4)",
+          "oklch(95% 0.028 337.4)"
+        ]
+      },
+      "plum-wash-dark": {
+        "role": "secondary",
+        "displayName": "Plum Wash (dark mode)",
+        "canonical": "#3b2535",
+        "oklch": "oklch(29.8% 0.042 337.1)",
+        "tonalRamp": [
+          "oklch(15% 0.042 337.1)",
+          "oklch(26.4% 0.042 337.1)",
+          "oklch(37.9% 0.042 337.1)",
+          "oklch(49.3% 0.042 337.1)",
+          "oklch(60.7% 0.042 337.1)",
+          "oklch(72.1% 0.042 337.1)",
+          "oklch(83.6% 0.042 337.1)",
+          "oklch(95% 0.028 337.1)"
+        ]
+      },
+      "rust-dark": {
+        "role": "secondary",
+        "displayName": "Rust (dark mode)",
+        "canonical": "#df8a6a",
+        "oklch": "oklch(71.5% 0.114 41.3)",
+        "tonalRamp": [
+          "oklch(15% 0.066 41.3)",
+          "oklch(26.4% 0.108 41.3)",
+          "oklch(37.9% 0.114 41.3)",
+          "oklch(49.3% 0.114 41.3)",
+          "oklch(60.7% 0.114 41.3)",
+          "oklch(72.1% 0.113 41.3)",
+          "oklch(83.6% 0.071 41.3)",
+          "oklch(95% 0.028 41.3)"
+        ]
+      },
+      "rust-wash-dark": {
+        "role": "secondary",
+        "displayName": "Rust Wash (dark mode)",
+        "canonical": "#42271d",
+        "oklch": "oklch(30.4% 0.045 41)",
+        "tonalRamp": [
+          "oklch(15% 0.045 41)",
+          "oklch(26.4% 0.045 41)",
+          "oklch(37.9% 0.045 41)",
+          "oklch(49.3% 0.045 41)",
+          "oklch(60.7% 0.045 41)",
+          "oklch(72.1% 0.045 41)",
+          "oklch(83.6% 0.045 41)",
+          "oklch(95% 0.028 41)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Species Name",
+        "purpose": "The common name at the top of every plate; 36px below 540px wide."
+      },
+      "taxonomy": {
+        "displayName": "Taxonomy",
+        "purpose": "Italic family and habitat line under the name, in ink-2."
+      },
+      "title": {
+        "displayName": "Section Head",
+        "purpose": "Section heads sitting on a hairline."
+      },
+      "mark-name": {
+        "displayName": "Mark Name",
+        "purpose": "Field-mark labels; look-alike names at 17px."
+      },
+      "summary": {
+        "displayName": "Summary",
+        "purpose": "One-sentence identification, max 34em."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Reading text: list items, mark details (ink-2)."
+      },
+      "hand-label": {
+        "displayName": "Hand Label",
+        "purpose": "Figure leader labels and plate caption; label-2 is 15px."
+      },
+      "hand-note": {
+        "displayName": "Hand Note",
+        "purpose": "The pencilled field note grounded in the user's screen."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Window running head and colophon in ink-3."
+      },
+      "plate-number": {
+        "displayName": "Plate Number",
+        "purpose": "'Plate N' at the plate's top right, tabular figures."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "540px",
+        "purpose": "max-width: habitat/behavior pair collapses to one column; species name drops to 36px."
+      }
+    ],
+    "colorScheme": "Light and dark are full peers via prefers-color-scheme; every color has a '-dark' sibling token in the frontmatter.",
+    "patterns": [
+      {
+        "name": "hatch",
+        "value": "6x6 userSpaceOnUse, rotate(45), 1px ink-3 line",
+        "purpose": "Shading for hidden parts, depth, or the 'don't' side of a contrast."
+      },
+      {
+        "name": "stipple",
+        "value": "7x7 userSpaceOnUse, ink-3 dots r 0.9 and 0.7",
+        "purpose": "Soft texture shading."
+      }
+    ],
+    "strokes": [
+      {
+        "name": "outline",
+        "value": "ink, 1.6, round join/cap",
+        "purpose": "The subject's ink line."
+      },
+      {
+        "name": "outline-soft",
+        "value": "ink-3, 1.2, dasharray 3 3",
+        "purpose": "Hidden or optional parts."
+      },
+      {
+        "name": "leader",
+        "value": "ink-2, 1, marker-end url(#dot)",
+        "purpose": "Thin line from a margin label to the part."
+      },
+      {
+        "name": "flow",
+        "value": "ink, 1.6, marker-end url(#head)",
+        "purpose": "Arrowed connector for process and data flow."
+      },
+      {
+        "name": "here",
+        "value": "buddy-blue, 2.2",
+        "purpose": "Ring or underline on the exact spot the user pointed at; once per figure."
+      }
+    ],
+    "figureCanvas": {
+      "plate": "viewBox 0 0 600 340, 24px safe margin",
+      "lookalike": "viewBox 0 0 160 90, caption near y 82"
+    },
+    "notYetAligned": "island.html, bubble.html and overlay.html predate the field-guide world and keep local styles; shared commitment is Buddy blue #2f7aff only."
+  },
+  "components": [
+    {
+      "name": "Peterson Arrow",
+      "kind": "custom",
+      "refersTo": "peterson-arrow",
+      "description": "Numbered Buddy-blue disc with a short arrow; arrow n on the figure matches field mark n.",
+      "html": "<svg class=\"ds-arrow\" width=\"44\" height=\"22\" viewBox=\"0 0 44 22\" aria-hidden=\"true\"><path d=\"M20 11 H33\" stroke=\"#2f7aff\" stroke-width=\"3\"/><path d=\"M33 5 L44 11 L33 17 Z\" fill=\"#2f7aff\"/><circle cx=\"11\" cy=\"11\" r=\"9.5\" fill=\"#1f5fd6\"/><text x=\"11\" y=\"15\" text-anchor=\"middle\" fill=\"#ffffff\" font-family=\"Segoe UI Variable Text, Segoe UI, sans-serif\" font-size=\"12\" font-weight=\"700\">1</text></svg>",
+      "css": ".ds-arrow { display: inline-block; vertical-align: middle; }"
+    },
+    {
+      "name": "Species Header",
+      "kind": "custom",
+      "refersTo": "species-header",
+      "description": "Species name, italic taxonomy and one-sentence summary at the top of every plate.",
+      "html": "<header class=\"ds-species\"><h1 class=\"ds-common\">VLOOKUP</h1><p class=\"ds-taxon\">Lookup function · Excel and Google Sheets</p><p class=\"ds-summary\">Finds a value in the first column of a table and hands back something from the same row.</p></header>",
+      "css": ".ds-species { padding: 10px 30px 22px; background: #f2f4f0; color: #1a201c; } .ds-common { margin: 0; font: 800 44px/0.98 'Alegreya Sans', 'Segoe UI Variable Display', sans-serif; letter-spacing: -0.02em; text-wrap: balance; } .ds-taxon { margin: 8px 0 0; font: italic 500 17px/1.3 'Alegreya Sans', 'Segoe UI Variable Display', sans-serif; color: #4c5650; } .ds-summary { margin: 16px 0 0; max-width: 34em; font: 17px/1.5 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; }"
+    },
+    {
+      "name": "Plate",
+      "kind": "card",
+      "refersTo": "plate",
+      "description": "Full-bleed tinted field holding the figure; never a card, no radius, no frame.",
+      "html": "<figure class=\"ds-plate\"><span class=\"ds-plate-no\">Plate 1</span><svg viewBox=\"0 0 600 140\" width=\"100%\"><rect x=\"200\" y=\"30\" width=\"200\" height=\"80\" fill=\"#d7e3cf\"/><rect x=\"300\" y=\"30\" width=\"100\" height=\"80\" fill=\"#f0e2bf\"/><rect x=\"200\" y=\"30\" width=\"200\" height=\"80\" fill=\"none\" stroke=\"#1a201c\" stroke-width=\"1.6\"/><path d=\"M120 70 H196\" stroke=\"#4c5650\" stroke-width=\"1\"/><circle cx=\"196\" cy=\"70\" r=\"2.4\" fill=\"#4c5650\"/><text x=\"40\" y=\"75\" font-family=\"Patrick Hand, Segoe Print, cursive\" font-size=\"17\" fill=\"#1a201c\">the range</text></svg><figcaption class=\"ds-cap\">Each argument is washed in the color of the part it controls.</figcaption></figure>",
+      "css": ".ds-plate { position: relative; margin: 0; padding: 26px 30px 16px; background: #e6eae3; } .ds-plate-no { position: absolute; top: 12px; right: 30px; font: 500 13px/1 'Alegreya Sans', sans-serif; color: #5a645e; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; } .ds-cap { margin-top: 10px; font: 17px/1.3 'Patrick Hand', 'Segoe Print', cursive; color: #4c5650; }"
+    },
+    {
+      "name": "Section Head with Field Marks",
+      "kind": "custom",
+      "refersTo": "field-mark",
+      "description": "Small species-face head on a hairline; each mark row repeats its Peterson arrow as the marker.",
+      "html": "<section class=\"ds-section\"><h2 class=\"ds-h2\">Field marks</h2><ol class=\"ds-marks\"><li><svg width=\"34\" height=\"17\" viewBox=\"0 0 44 22\" aria-hidden=\"true\"><path d=\"M20 11 H33\" stroke=\"#2f7aff\" stroke-width=\"3\"/><path d=\"M33 5 L44 11 L33 17 Z\" fill=\"#2f7aff\"/><circle cx=\"11\" cy=\"11\" r=\"9.5\" fill=\"#1f5fd6\"/><text x=\"11\" y=\"15\" text-anchor=\"middle\" fill=\"#fff\" font-size=\"12\" font-weight=\"700\">1</text></svg><div><b>Lookup value</b><span>What you're searching for. Here, the item name sitting in A2.</span></div></li></ol></section>",
+      "css": ".ds-section { padding: 26px 30px 0; background: #f2f4f0; color: #1a201c; font: 15px/1.55 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-h2 { margin: 0 0 10px; padding-top: 10px; border-top: 1px solid #cfd5cd; font: 800 15px/1.2 'Alegreya Sans', sans-serif; letter-spacing: 0.01em; } .ds-marks { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; } .ds-marks li { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: start; } .ds-marks li svg { margin-top: 2px; } .ds-marks b { display: block; font: 800 16px/1.3 'Alegreya Sans', sans-serif; } .ds-marks span { color: #4c5650; }"
+    },
+    {
+      "name": "Look-alike",
+      "kind": "custom",
+      "refersTo": "similar-species",
+      "description": "Easily-confused-with column: ink rule on top, optional 160x90 sketch, name, tell-apart line.",
+      "html": "<div class=\"ds-similar\"><div><svg viewBox=\"0 0 160 90\"><rect x=\"8\" y=\"6\" width=\"144\" height=\"54\" fill=\"#d7e3cf\"/><rect x=\"8\" y=\"6\" width=\"144\" height=\"54\" fill=\"none\" stroke=\"#1a201c\" stroke-width=\"1.6\"/><text x=\"80\" y=\"82\" text-anchor=\"middle\" font-family=\"Patrick Hand, cursive\" font-size=\"15\" fill=\"#4c5650\">looks left too</text></svg><b>XLOOKUP</b><span>Can look left as well as right, and defaults to exact match.</span></div></div>",
+      "css": ".ds-similar { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px 22px; background: #f2f4f0; color: #1a201c; } .ds-similar > div { border-top: 1px solid #1a201c; padding-top: 10px; } .ds-similar svg { display: block; width: 100%; height: auto; margin-bottom: 8px; } .ds-similar b { display: block; font: 800 17px/1.2 'Alegreya Sans', sans-serif; } .ds-similar span { display: block; margin-top: 4px; color: #4c5650; font: 14px/1.55 'Segoe UI Variable Text', 'Segoe UI', sans-serif; }"
+    },
+    {
+      "name": "Field Note",
+      "kind": "custom",
+      "refersTo": "field-note",
+      "description": "Unboxed pencilled observation from the user's own screen, signed with app and date.",
+      "html": "<aside class=\"ds-note\"><p>Your cell D4 runs =VLOOKUP(A2, Prices!A:C, 3, FALSE), so it fills in Pear's price, $1.20.</p><div class=\"ds-signed\">— seen in Excel, 5 Nov 2026</div></aside>",
+      "css": ".ds-note { padding: 28px 30px 0; background: #f2f4f0; } .ds-note p { margin: 0; font: 19px/1.35 'Patrick Hand', 'Segoe Print', cursive; color: #1a201c; } .ds-signed { margin-top: 6px; font: 15px/1.2 'Patrick Hand', 'Segoe Print', cursive; color: #4c5650; text-align: right; }"
+    },
+    {
+      "name": "Colophon",
+      "kind": "nav",
+      "refersTo": "colophon",
+      "description": "Hairline-topped footer naming the guide and the plate number.",
+      "html": "<footer class=\"ds-colophon\"><i>A Field Guide to Your Screen</i><span>Plate 1</span></footer>",
+      "css": ".ds-colophon { margin: 0 30px; padding: 12px 0 24px; border-top: 1px solid #cfd5cd; display: flex; justify-content: space-between; gap: 12px; font: 12.5px 'Segoe UI Variable Text', 'Segoe UI', sans-serif; color: #5a645e; } .ds-colophon i { font-family: 'Alegreya Sans', sans-serif; font-size: 14px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Field Guide to Your Screen",
+    "overview": "Every explainer Buddy opens is a plate in a Peterson- or Sibley-style field guide. The thing the user pointed at (a formula, a dialog, a domain term, an idea) is treated as a species: named large, placed in its family, drawn as an anatomical figure on a tinted plate, ringed with hand-lettered margin labels on leader lines, and tagged with numbered Peterson arrows that tie each part of the drawing to a numbered field mark below. The page then reads like the rest of a guide entry: where you'll meet it, how it behaves, what it is easily confused with, and a pencilled field note grounded in the user's own screen.\n\nThe world is paper and ink: pale sage paper, a slightly deeper sage plate, near-black green-tinted ink, hairline rules. Color lives in the figure only, as five naturalist pigments laid down like watercolor washes plus hatch and stipple for shading. The one accent outside the figure is Buddy blue, carried by the Peterson arrows, the window's mark, and the \"here\" ring around the exact spot the user pointed at. Density is that of a reference book: one column, generous paper, square edges, no containers. The page renders with JavaScript disabled, a strict CSP and embedded fonts, so everything is CSS plus inline SVG.\n\nThe renderer (`src/explainer.js`) owns every layout decision; the model writes structured fields and one SVG figure using a fixed class vocabulary. This split is part of the system: new subjects change content, never layout. The world explicitly refuses the stock AI card stack (rounded cards, stat tiles, tinted callout boxes).",
+    "keyCharacteristics": [
+      "One-column reference page, 30px side gutter, sections divided by hairline rules, never boxed.",
+      "A full-bleed tinted plate carries the figure; it is a field, not a card.",
+      "Three voices of type: Alegreya Sans for names, Patrick Hand for anything \"drawn by hand\", Segoe for reading text.",
+      "Pigments only inside figures; Buddy blue only for arrows, the identity mark, and the pointed-at spot.",
+      "Light and dark are full peers, both defined token for token through `prefers-color-scheme`."
+    ],
+    "rules": [
+      {
+        "name": "The Pigments-Stay-in-the-Figure Rule",
+        "body": "The five pigments and their washes appear only inside SVG figures (the plate and the look-alike sketches). Page text, rules and backgrounds use only paper, plate, ink and rule tones.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Blue Rule",
+        "body": "Buddy blue marks Buddy and the pointed-at spot, nothing else: Peterson arrows, the chrome glyph, the `here` ring, selection. The model may use `here` once per figure, only on the exact thing the user pointed at.",
+        "section": "colors"
+      },
+      {
+        "name": "The Wash, Not Tint Rule",
+        "body": "Areas get a soft wash, the part that matters gets the full pigment, and depth, hidden parts or the \"don't\" side of a contrast get hatch or stipple. Plain flat tints alone are not a figure.",
+        "section": "colors"
+      },
+      {
+        "name": "The Three Hands Rule",
+        "body": "Names are set in Alegreya Sans, reading text in Segoe, and anything drawn or observed by hand (figure labels, captions, the field note) in Patrick Hand. A role never borrows another voice.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Numbers Rule",
+        "body": "Numbers that count or compare (plate number, figure `num` text, ordered behavior steps) use tabular figures.",
+        "section": "typography"
+      },
+      {
+        "name": "The Renderer Owns Layout Rule",
+        "body": "The model supplies fields and SVG; it never supplies page structure, spacing, or wrappers. Field marks cap at 6, look-alikes at 3.",
+        "section": "layout"
+      },
+      {
+        "name": "The Paper Has No Shadows Rule",
+        "body": "Separation comes from tone change (paper to plate) or a 1px hairline, never from elevation.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** use the model-facing class vocabulary for every figure color and stroke (`ink`, `p1`..`p5`, `p1s`..`p5s`, `hatch`, `stipple`, `outline`, `outline-soft`, `leader`, `flow`, `here`, `label`, `label-2`, `name`, `small`, `num`) so light and dark both work.",
+      "**Do** tie every numbered arrow on the figure to the field mark with the same number.",
+      "**Do** keep figure content 24px inside the viewBox and leave generous empty plate around the specimen.",
+      "**Do** ground figures and the field note in the user's real labels and numbers.",
+      "**Do** define every new color in both the light and dark token sets."
+    ],
+    "donts": [
+      "**Don't** put the figure, a section, or a list inside a rounded card, stat tile or tinted callout box; the plate is a full-bleed field and sections are divided by hairlines.",
+      "**Don't** draw a frame around the figure.",
+      "**Don't** use a pigment outside an SVG figure, or Buddy blue for anything but arrows, the identity mark, selection, and the single `here` spot.",
+      "**Don't** hard-code colors in model SVG; use the classes.",
+      "**Don't** add shadows to the explainer.",
+      "**Don't** load fonts, images or scripts from the network; embed fonts as data URIs and draw everything else in inline SVG."
+    ]
+  }
+}

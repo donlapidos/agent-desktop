@@ -1,0 +1,118 @@
+{
+  "title": "Choose the explainer's visual world",
+  "question": "The roll assigned The Operating Manual. Keep it, take an alternate, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "The Operating Manual",
+      "kicker": "THE ROLL",
+      "lineage": "Braun / Dieter Rams instruction leaflets, DIN technical documentation",
+      "thesis": "Every explainer is a page from the manual for the thing you pointed at.",
+      "palette": ["#e9ebe8", "#151617", "#2f7aff", "#8a8f94"],
+      "materials": ["strict 12-column grid", "Bahnschrift (DIN) labels and numerals", "line diagrams with numbered callout keys", "Buddy blue marks what you pointed at"],
+      "viewport": "Section number and title in DIN caps; the one-sentence answer set large across a solid Buddy-blue band; Figure 1 below, a line diagram whose numbered keys ①②③ match the steps beside it.",
+      "risk": "Can feel cold or corporate if the diagrams are timid; it lives or dies on the model drawing real figures.",
+      "raised": [
+        { "from": "challenger-cracktro", "raise": "Nothing sits in a box: no cards, no tiles, no bordered callouts. Hierarchy comes from grid position and type size alone." },
+        { "from": "challenger-cutting-bench", "raise": "Buddy blue is committed at field scale (the answer band holds about a quarter of the first view), not sprinkled as accents." },
+        { "from": "challenger-labanotation", "raise": "Figures encode quantity: bars, flows and parts are drawn to true proportion, never decorative." },
+        { "from": "challenger-alphabet-storm", "raise": "The answer is set as the page's dominant typographic mass, large enough to read across the room." }
+      ]
+    },
+    {
+      "id": "model-pick",
+      "label": "The Field-Guide Plate",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "Peterson and Sibley field guides, natural-history identification plates",
+      "thesis": "What you pointed at becomes a specimen: drawn, labeled with leader lines, and classified.",
+      "palette": ["#f4f5f0", "#1d2420", "#2f7aff", "#6e7a72"],
+      "materials": ["plate numbering", "leader-line annotation", "identification key", "comparison of look-alikes"],
+      "viewport": "Plate number and common name up top; the subject drawn large with leader lines to its labeled parts; a 'similar species' strip comparing it to things it is confused with.",
+      "risk": "Strong for concrete things you point at, strained for abstract ideas that have no specimen to draw."
+    },
+    {
+      "id": "challenger-alphabet-storm", "label": "Alphabet Storm", "verdict": "declined",
+      "lineage": "surreal typographic landscapes",
+      "thesis": "Letters condense into words and break into weather.",
+      "palette": ["#f6f6f4", "#0b0b0b", "#b8bcc2", "#8d9196"],
+      "materials": ["monumental grotesk as matter"],
+      "viewport": "A single word-weather event per view.",
+      "case": "Fuses poorly: transforming type fights comprehension of an unfamiliar idea.",
+      "kept": "The headline as the page's dominant mass.",
+      "risk": "Spectacle over understanding.",
+      "hero": "https://impeccable.style/worlds/cards/dream-surreal-impossible-worlds-alphabet-storm-hero.webp"
+    },
+    {
+      "id": "challenger-drawcord-cape", "label": "Drawcord Cape", "verdict": "declined",
+      "lineage": "transforming textile design",
+      "thesis": "One pull turns a flat plane into a shaped volume.",
+      "palette": ["#0d0d0e", "#c9a227", "#3a3d42", "#6b7280"],
+      "materials": ["black silk", "gold cord"],
+      "viewport": "A flat semicircle gathering into form.",
+      "case": "Fuses poorly: no link to explaining software or ideas.",
+      "kept": "One governing geometry rules every alignment.",
+      "risk": "Pure costume for this product.",
+      "hero": "https://impeccable.style/worlds/cards/textiles-weave-drape-fashion-drawcord-transforming-cape-hero.webp"
+    },
+    {
+      "id": "challenger-cracktro", "label": "Cracktro Scroller", "verdict": "declined",
+      "lineage": "demoscene title screens",
+      "thesis": "Rank is depth on an emissive black void; nothing is ever boxed.",
+      "palette": ["#050505", "#efe9d8", "#8a8a8a", "#f5a524"],
+      "materials": ["bitmap face", "drifting dust layers"],
+      "viewport": "One still line of text over drifting dust.",
+      "case": "Fuses poorly: a novelty register for a reference artifact meant to be kept.",
+      "kept": "No enclosure: hierarchy without boxes or rules.",
+      "risk": "Retro gimmick.",
+      "hero": "https://impeccable.style/worlds/cards/operate-c-cracktro-scroller-queue-hero.webp"
+    },
+    {
+      "id": "challenger-cutting-bench", "label": "Cutting Bench", "verdict": "declined",
+      "lineage": "film editing work prints",
+      "thesis": "Steps as punched frames along a perforated rail.",
+      "palette": ["#0a0a0a", "#ff6a13", "#ffffff"],
+      "materials": ["film grain", "tape flags"],
+      "viewport": "A perforated rail crossing an orange field.",
+      "case": "Fuses poorly: editing metaphors don't map to explaining concepts.",
+      "kept": "Commit the signal color at field scale.",
+      "risk": "Heavy orange fatigues a reading surface.",
+      "hero": "https://impeccable.style/worlds/cards/operate-a-cutting-bench-select-rail-hero.webp"
+    },
+    {
+      "id": "challenger-warm-app", "label": "Warm Consumer App", "verdict": "declined",
+      "lineage": "friendly consumer app cards",
+      "thesis": "Soft cards on a warm ground with one action color.",
+      "palette": ["#f6efe7", "#ffffff", "#ff5a36", "#2b2b2b"],
+      "materials": ["rounded cards", "humanist sans"],
+      "viewport": "A column of soft cards.",
+      "case": "Fuses poorly: this is the generic look the redesign is replacing.",
+      "kept": "One color means one thing.",
+      "risk": "Exactly the 'generic AI output' complaint.",
+      "hero": "https://impeccable.style/worlds/cards/digital-design-canon-warm-consumer-app-surface-hero.webp"
+    },
+    {
+      "id": "challenger-labanotation", "label": "Labanotation Score", "verdict": "declined",
+      "lineage": "dance notation",
+      "thesis": "Symbol shape is direction, shading is level, length is exact duration.",
+      "palette": ["#ffffff", "#111111", "#cfcfcf"],
+      "materials": ["center staff", "hatched symbol blocks"],
+      "viewport": "A vertical staff read upward.",
+      "case": "Fuses poorly: an expert notation readers must learn first.",
+      "kept": "Shapes encode exact quantities.",
+      "risk": "Opaque to newcomers.",
+      "hero": "https://impeccable.style/worlds/cards/notation-diagram-systems-labanotation-hero.webp"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "buildPath": { "value": "code", "toggle": false },
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "thesis": "A clean AI-assistant explainer card, executed impeccably.",
+    "palette": ["#ffffff", "#111827", "#2563eb", "#f3f4f6"],
+    "materials": ["rounded cards", "callout boxes", "stat tiles"],
+    "viewport": "Title, summary card, a grid of cards, a tip callout.",
+    "risk": "Indistinguishable from every other assistant by design."
+  },
+  "steer": true
+}
