@@ -166,3 +166,68 @@ test("a Responses reply that fails mid-stream is reported, out of credit include
     (e) => e instanceof ProviderError && e.kind === "billing_error",
   );
 });
+
+test("addresses: https anywhere, plain http only on this PC or the local network", async () => {
+  const { addressProblem } = await import("../src/providers.js");
+  for (const ok of ["http://localhost:11434/v1", "http://127.0.0.1:1234/v1", "http://192.168.1.20:8000/v1", "http://10.0.0.5/v1", "http://[::1]:8080/v1", "http://gpu-box.local:8000/v1", "https://llm.example.com/v1"]) assert.equal(addressProblem(ok), null, ok);
+  assert.match(addressProblem("http://llm.example.com/v1"), /https/);
+  assert.match(addressProblem("ftp://localhost/v1"), /http/);
+  assert.match(addressProblem("localhost:11434"), /http|address/);
+  assert.match(addressProblem("not a url"), /address/);
+});
+
+// A stand-in for Ollama's OpenAI-compatible API (GET /v1/models, streamed POST /v1/chat/completions), over real HTTP.
+async function fakeOllama(handle) {
+  const http = await import("node:http");
+  const seen = [];
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : null });
+    if (req.url === "/v1/models") {
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify({ object: "list", data: [{ id: "qwen3:8b", object: "model", owned_by: "library" }, { id: "nomic-embed-text:latest", object: "model" }, { id: "gemma3:4b", object: "model" }] }));
+    }
+    handle(req, res, seen.at(-1).body);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${server.address().port}/v1`, seen, close: () => new Promise((r) => server.close(r)) };
+}
+
+test("Ollama and LM Studio: no key, the models installed in the server's order, tool calls streamed back", async () => {
+  const server = await fakeOllama((_req, res) => {
+    res.setHeader("content-type", "text/event-stream");
+    const chunk = (c) => res.write(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", model: "qwen3:8b", choices: [c] })}\n\n`);
+    chunk({ index: 0, delta: { role: "assistant", content: "" } });
+    chunk({ index: 0, delta: { tool_calls: [{ id: "call_x", index: 0, type: "function", function: { name: "look", arguments: "{}" } }] } });
+    chunk({ index: 0, delta: {}, finish_reason: "tool_calls" });
+    res.end("data: [DONE]\n\n");
+  });
+  try {
+    assert.deepEqual(await listModels("ollama", "", { baseURL: server.url }), ["qwen3:8b", "gemma3:4b"], "embeddings left out; order kept");
+    const reply = await chatTurn({ provider: "ollama", baseURL: server.url, key: "", model: "qwen3:8b", effort: "low", system: "s", tools: [{ name: "look", description: "Look", input_schema: { type: "object" } }], messages: [{ role: "user", content: "hi" }], maxTokens: 100 });
+    assert.deepEqual(reply.content, [{ type: "tool_use", id: "call_x", name: "look", input: {} }]);
+    assert.equal(server.seen.every((r) => r.auth === undefined), true, "no Authorization header without a key");
+    assert.equal(server.seen.at(-1).url, "/v1/chat/completions");
+  } finally {
+    await server.close();
+  }
+});
+
+test("Ollama not running, or a server out of reach, is told apart from a refusal", async () => {
+  const server = await fakeOllama(() => {});
+  const url = server.url;
+  await server.close();
+  await assert.rejects(listModels("ollama", "", { baseURL: url }), (e) => e instanceof ProviderError && e.kind === "not_running");
+  await assert.rejects(
+    chatTurn({ provider: "custom", baseURL: url, key: "", model: "m", effort: "low", system: "", tools: [], messages: [], maxTokens: 1 }),
+    (e) => e instanceof ProviderError && e.kind === "unreachable",
+  );
+  const ctl = new AbortController();
+  ctl.abort();
+  await assert.rejects(chatTurn({ provider: "custom", baseURL: url, key: "", model: "m", effort: "low", system: "", tools: [], messages: [], maxTokens: 1, signal: ctl.signal }), (e) => e.name === "AbortError", "a cancel stays a cancel");
+});
+
+test("a key for another server stays with that server, even one shaped like OpenAI's", () => {
+  assert.equal(providerForKey("sk-proj-abcdefghijklmnopqrstuvwxyz", "custom"), "custom");
+});

@@ -104,3 +104,11 @@ test("each provider keeps its own model; unknown providers and odd model ids are
   assert.deepEqual(update(b.settings, { providerModels: { openai: "gpt 5; rm -rf" } }).rejected, ["providerModels.openai"]);
   assert.equal(normalize({ providerModels: { anthropic: "x", openai: "" } }).providerModels.openai, undefined);
 });
+
+test("addresses are kept per provider, and unsafe ones refused", () => {
+  const s = update(normalize({}), { provider: "ollama", providerURLs: { ollama: "http://localhost:11500/v1/" } });
+  assert.deepEqual(s.rejected, []);
+  assert.equal(s.settings.providerURLs.ollama, "http://localhost:11500/v1", "trailing slash dropped");
+  assert.deepEqual(update(s.settings, { providerURLs: { custom: "http://llm.example.com/v1" } }).rejected, ["providerURLs.custom"], "plain http to the internet");
+  assert.deepEqual(update(s.settings, { providerURLs: { openai: "https://evil.example.com/v1" } }).settings.providerURLs, { ollama: "http://localhost:11500/v1" }, "fixed providers' addresses can't be changed");
+});

@@ -4,20 +4,42 @@
 // reply converted back, so history, trimming and tools work the same whichever provider answers.
 
 /**
- * @typedef {"anthropic" | "openai" | "openrouter" | "gemini" | "deepseek"} ProviderId
- * @typedef {{ id: ProviderId, label: string, baseURL?: string, keyFrom: string, keyEnv?: string, placeholder: string, prefix?: RegExp, loose?: boolean }} Provider
+ * @typedef {"anthropic" | "openai" | "openrouter" | "gemini" | "deepseek" | "ollama" | "lmstudio" | "custom"} ProviderId
+ * @typedef {{ id: ProviderId, label: string, note: string, baseURL?: string, keyFrom: string, keyEnv?: string, placeholder: string, prefix?: RegExp, loose?: boolean, key: "required" | "none" | "optional", local?: boolean }} Provider
  * prefix: how this provider's keys start (or, with loose, how some of them do: other sk- keys may be theirs too).
+ * key: whether it needs one. local: it runs on this PC, so a refused connection means it isn't running.
  */
 
 /** @type {Readonly<Record<ProviderId, Provider>>} */
 export const PROVIDERS = Object.freeze({
-  anthropic: { id: "anthropic", label: "Anthropic", keyFrom: "console.anthropic.com", keyEnv: "ANTHROPIC_API_KEY", placeholder: "sk-ant-…", prefix: /^sk-ant-/ },
-  openai: { id: "openai", label: "OpenAI", baseURL: "https://api.openai.com/v1", keyFrom: "platform.openai.com", keyEnv: "OPENAI_API_KEY", placeholder: "sk-…", prefix: /^sk-(proj|svcacct|admin)-/, loose: true },
-  openrouter: { id: "openrouter", label: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", keyFrom: "openrouter.ai/keys", keyEnv: "OPENROUTER_API_KEY", placeholder: "sk-or-…", prefix: /^sk-or-/ },
-  gemini: { id: "gemini", label: "Google Gemini", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", keyFrom: "aistudio.google.com", keyEnv: "GEMINI_API_KEY", placeholder: "AIza…", prefix: /^AIza/ },
-  deepseek: { id: "deepseek", label: "DeepSeek", baseURL: "https://api.deepseek.com/v1", keyFrom: "platform.deepseek.com", keyEnv: "DEEPSEEK_API_KEY", placeholder: "sk-…", loose: true },
+  anthropic: { id: "anthropic", label: "Anthropic", note: "Claude models.", keyFrom: "console.anthropic.com", keyEnv: "ANTHROPIC_API_KEY", placeholder: "sk-ant-…", prefix: /^sk-ant-/, key: "required" },
+  openai: { id: "openai", label: "OpenAI", note: "GPT models.", baseURL: "https://api.openai.com/v1", keyFrom: "platform.openai.com", keyEnv: "OPENAI_API_KEY", placeholder: "sk-…", prefix: /^sk-(proj|svcacct|admin)-/, loose: true, key: "required" },
+  openrouter: { id: "openrouter", label: "OpenRouter", note: "One key for hundreds of models.", baseURL: "https://openrouter.ai/api/v1", keyFrom: "openrouter.ai/keys", keyEnv: "OPENROUTER_API_KEY", placeholder: "sk-or-…", prefix: /^sk-or-/, key: "required" },
+  gemini: { id: "gemini", label: "Google Gemini", note: "Gemini models; Google AI Studio has a free tier.", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", keyFrom: "aistudio.google.com", keyEnv: "GEMINI_API_KEY", placeholder: "AIza…", prefix: /^AIza/, key: "required" },
+  deepseek: { id: "deepseek", label: "DeepSeek", note: "DeepSeek models.", baseURL: "https://api.deepseek.com/v1", keyFrom: "platform.deepseek.com", keyEnv: "DEEPSEEK_API_KEY", placeholder: "sk-…", loose: true, key: "required" },
+  ollama: { id: "ollama", label: "Ollama", note: "Models on this PC. Free and private; no key.", baseURL: "http://localhost:11434/v1", keyFrom: "ollama.com", placeholder: "", key: "none", local: true },
+  lmstudio: { id: "lmstudio", label: "LM Studio", note: "Models on this PC. Free and private; no key.", baseURL: "http://localhost:1234/v1", keyFrom: "lmstudio.ai", placeholder: "", key: "none", local: true },
+  custom: { id: "custom", label: "Other server", note: "Any OpenAI-compatible server, at an address you give.", keyFrom: "the server's owner", placeholder: "Key, if the server needs one", loose: true, key: "optional" },
 });
 export const PROVIDER_IDS = /** @type {ProviderId[]} */ (Object.keys(PROVIDERS));
+
+/**
+ * Whether `url` is an address Buddy may send requests (and a key) to: https anywhere, or plain http only on this PC
+ * or the local network, where servers like Ollama listen without TLS. Returns a problem in words, or null.
+ */
+export function addressProblem(/** @type {string} */ url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return "That isn't a web address. It looks like http://localhost:11434/v1.";
+  }
+  if (u.protocol === "https:") return null;
+  if (u.protocol !== "http:") return "The address has to start with http:// or https://.";
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  const nearby = host === "localhost" || host === "::1" || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || host.endsWith(".local");
+  return nearby ? null : "Use https:// for a server outside this PC and your local network, so your questions travel encrypted.";
+}
 
 /** The provider a key unmistakably belongs to, from its prefix, or null (a plain sk- key could be OpenAI or DeepSeek). */
 export function providerOfKey(/** @type {string} */ key) {
@@ -30,6 +52,7 @@ export function providerOfKey(/** @type {string} */ key) {
  * @param {string} key @param {ProviderId} chosen @returns {ProviderId}
  */
 export function providerForKey(key, chosen) {
+  if (PROVIDERS[chosen].key === "optional") return chosen;
   return providerOfKey(key) ?? (PROVIDERS[chosen].loose || !PROVIDERS[chosen].prefix ? chosen : "openai");
 }
 
@@ -48,6 +71,9 @@ const NOT_CHAT = /(embed|whisper|tts|transcribe|audio|realtime|dall-e|image|mode
 /** Chat models from a provider's /models list, best first: newest version of the main family, then the rest. */
 export function chatModels(/** @type {ProviderId} */ provider, /** @type {string[]} */ ids) {
   const usable = [...new Set(ids)].filter((id) => !NOT_CHAT.test(id));
+  // Models people installed themselves (Ollama, LM Studio, their own server) keep the server's order: version
+  // numbers there say nothing about which is best.
+  if (provider === "ollama" || provider === "lmstudio" || provider === "custom") return usable;
   const list = provider === "openai" ? usable.filter((id) => /^(gpt-|o\d|chatgpt-)/.test(id)) : usable;
   return list.sort((a, b) => rank(b) - rank(a) || a.localeCompare(b));
 }
@@ -60,9 +86,14 @@ function rank(/** @type {string} */ id) {
   return version * 10 + variant * 5;
 }
 
-/** The provider's chat models for this key, best first. Throws a ProviderError if the key is refused. */
-export async function listModels(/** @type {ProviderId} */ provider, /** @type {string} */ key, fetchImpl = fetch) {
-  const res = await fetchImpl(`${PROVIDERS[provider].baseURL}/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+const authHeaders = (/** @type {string} */ key) => (key ? { authorization: `Bearer ${key}` } : {});
+
+/**
+ * The provider's chat models for this key, best first. Throws a ProviderError if the key is refused or the server
+ * can't be reached. `baseURL` is for providers at an address the user gave.
+ */
+export async function listModels(/** @type {ProviderId} */ provider, /** @type {string} */ key, { baseURL = PROVIDERS[provider].baseURL, fetchImpl = fetch } = {}) {
+  const res = await reach(provider, () => fetchImpl(`${baseURL}/models`, { headers: authHeaders(key), signal: AbortSignal.timeout(15_000) }));
   if (!res.ok) throw await providerError(res);
   const body = await res.json();
   return chatModels(provider, (body.data ?? []).map((m) => String(m.id).replace(/^models\//, "")));
@@ -77,6 +108,16 @@ export class ProviderError extends Error {
     super(message);
     this.kind = kind;
     this.status = status;
+  }
+}
+
+/** A request that couldn't reach the server at all, as a ProviderError: not running (on this PC) or unreachable. */
+async function reach(/** @type {ProviderId} */ provider, /** @type {() => Promise<Response>} */ send) {
+  try {
+    return await send();
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    throw new ProviderError(PROVIDERS[provider].local ? "not_running" : "unreachable", 0, String(err?.cause?.code ?? err?.cause?.message ?? err?.message ?? err));
   }
 }
 
@@ -308,20 +349,22 @@ const refused = new Map();
 /**
  * One model turn on a provider other than Anthropic, streamed: OpenAI through Responses, the rest through Chat
  * Completions. Resolves the Anthropic-shaped reply.
- * @param {{ provider: ProviderId, key: string, model: string, effort: string, system: string, tools: any[], messages: any[], maxTokens: number, signal?: AbortSignal, fetchImpl?: typeof fetch }} o
+ * @param {{ provider: ProviderId, key: string, model: string, effort: string, system: string, tools: any[], messages: any[], maxTokens: number, baseURL?: string, signal?: AbortSignal, fetchImpl?: typeof fetch }} o
  */
-export async function chatTurn({ provider, key, model, signal, fetchImpl = fetch, ...rest }) {
+export async function chatTurn({ provider, key, model, signal, baseURL = PROVIDERS[provider].baseURL, fetchImpl = fetch, ...rest }) {
   const responses = provider === "openai";
-  const memo = `${provider}|${model}`;
+  const memo = `${baseURL}|${model}`;
   const drop = refused.get(memo) ?? new Set();
   for (let attempt = 0; attempt <= OPTIONAL.length; attempt++) {
     const body = responses ? responsesRequest({ model, drop, ...rest }) : chatRequest({ provider, model, drop, ...rest });
-    const res = await fetchImpl(`${PROVIDERS[provider].baseURL}${responses ? "/responses" : "/chat/completions"}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
+    const res = await reach(provider, () =>
+      fetchImpl(`${baseURL}${responses ? "/responses" : "/chat/completions"}`, {
+        method: "POST",
+        headers: { ...authHeaders(key), "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      }),
+    );
     if (res.ok) return responses ? readResponses(res) : readStream(res);
     const err = await providerError(res);
     const field = err.kind === "invalid_request" ? OPTIONAL.find((f) => f in body && err.message.includes(f)) : undefined;

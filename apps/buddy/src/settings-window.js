@@ -14,6 +14,7 @@ const SIZE = { width: 640, height: 600 };
  *   capture: (on: boolean) => void,                         // let go of Buddy's shortcuts while one is recorded
  *   preview: (voice: number, speed: number) => void,        // say a line in that voice
  *   setKey: (key: string) => Promise<string | null>,        // resolves an error message, or null
+ *   setAddress: (url: string) => Promise<string | null>,    // where Ollama, LM Studio or another server is
  *   removeKey: () => void,
  *   setStartup: (on: boolean) => void,
  *   clear: (what: "explainers" | "log") => void,
@@ -75,6 +76,7 @@ export function createSettingsWindow(deps) {
   handle("settings-capture", (on) => deps.capture(!!on));
   handle("settings-preview", (voice, speed) => deps.preview(Number(voice), Number(speed)));
   handle("settings-key", async (key) => ({ error: await deps.setKey(String(key ?? "")), state: deps.state() }));
+  handle("settings-address", async (url) => ({ error: await deps.setAddress(String(url ?? "")), state: deps.state() }));
   handle("settings-key-remove", () => (deps.removeKey(), deps.state()));
   handle("settings-startup", (on) => (deps.setStartup(!!on), deps.state()));
   handle("settings-clear", (what) => {

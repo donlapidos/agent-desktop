@@ -10,7 +10,7 @@ import { AgentBrain } from "./agent-brain.js";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
 import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop, staleClaude } from "./claude-setup.js";
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
-import { PROVIDERS, ProviderError, keyFits, listModels, providerForKey } from "./providers.js";
+import { PROVIDERS, ProviderError, addressProblem, keyFits, listModels, providerForKey } from "./providers.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
@@ -18,7 +18,7 @@ import { createTasks } from "./tasks.js";
 import { asDipPoint, asDipRect, asPhysicalPoint, asPhysicalRect } from "./geometry.js";
 import { BUSY, canMove } from "./modes.js";
 import {
-  ACCENTS, DEFAULTS, EFFORTS, HOTKEY_NAMES, MODELS, SPEED, VOICES, load as loadSettings, normalize as normalizeSettings,
+  ACCENTS, ADDRESS_PROVIDERS, DEFAULTS, EFFORTS, HOTKEY_NAMES, MODELS, SPEED, VOICES, load as loadSettings, normalize as normalizeSettings,
   save as saveSettings, update as updateSettings,
 } from "./settings.js";
 import { createSettingsWindow } from "./settings-window.js";
@@ -151,16 +151,26 @@ function saveApiKey(/** @type {string} */ key, /** @type {ProviderId} */ provide
 /** @type {Map<ProviderId, { models: string[], error: string | null, loading: boolean }>} */
 const providerModelLists = new Map();
 
+// Where a provider is: its fixed address, or the one the user gave (Ollama and LM Studio default to their usual one).
+const providerURL = (/** @type {ProviderId} */ provider = currentProvider()) => settings.providerURLs[provider] ?? PROVIDERS[provider].baseURL ?? null;
+
+// Whether Buddy can think with this provider: it has a key, or needs none and has an address.
+function providerReady(/** @type {ProviderId} */ provider = currentProvider()) {
+  if (PROVIDERS[provider].key === "required") return !!loadApiKey(provider);
+  return !!providerURL(provider);
+}
+
 /** Fetches the provider's models; picks the best one if none is chosen yet. Resolves an error message, or null. */
-async function refreshModels(/** @type {ProviderId} */ provider = currentProvider(), key = loadApiKey(provider)) {
-  if (provider === "anthropic" || !key) return null;
+async function refreshModels(/** @type {ProviderId} */ provider = currentProvider(), key = loadApiKey(provider) ?? "") {
+  const baseURL = providerURL(provider);
+  if (provider === "anthropic" || !baseURL || (PROVIDERS[provider].key === "required" && !key)) return null;
   providerModelLists.set(provider, { models: providerModelLists.get(provider)?.models ?? [], error: null, loading: true });
   settingsWindow?.refresh();
   let error = null;
   let models = [];
   try {
-    models = await listModels(provider, key);
-    if (!models.length) error = `${PROVIDERS[provider].label} didn't list any chat models for this key.`;
+    models = await listModels(provider, key, { baseURL });
+    if (!models.length) error = PROVIDERS[provider].local ? `${PROVIDERS[provider].label} has no models yet. Download one in ${PROVIDERS[provider].label}, then come back.` : `${PROVIDERS[provider].label} didn't list any chat models for this key.`;
   } catch (err) {
     error = err instanceof ProviderError ? (failureFor(err.kind, provider) ?? err.message) : `Couldn't reach ${PROVIDERS[provider].label}: ${err?.message ?? err}`;
   }
@@ -773,7 +783,7 @@ function openExplainer(explainer, { near = cursor(), observed = null } = {}) {
 // ---------- IPC ----------
 
 ipcMain.handle("ask", async (_e, text, opts = {}) => {
-  if (!brain) return { reply: "Add an API key first (Settings › AI & privacy): Anthropic, OpenAI, OpenRouter, Gemini or DeepSeek. No key? Ask me from Claude's own app on your Claude plan instead: Use with Claude, in the same place." };
+  if (!brain) return { reply: "Choose how I think first, in Settings › AI & privacy: an API key (Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek), or a free model on this PC with Ollama or LM Studio. Or ask me from Claude's own app on your Claude plan: Use with Claude, in the same place." };
   // Typed while the mic was open: the typing wins.
   if (mode === "listening") voice.cancelListening();
   else if (mode !== "idle") return { reply: BUSY[mode] };
@@ -809,6 +819,7 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
 // message, or null.
 async function setApiKey(/** @type {string} */ key) {
   const k = key.trim();
+  if (PROVIDERS[currentProvider()].key === "none") return `${PROVIDERS[currentProvider()].label} doesn't use a key.`;
   const provider = providerForKey(k, currentProvider());
   if (!keyFits(provider, k)) return `That doesn't look like a key from ${PROVIDERS[provider].label}. Get one at ${PROVIDERS[provider].keyFrom}.`;
   if (provider !== "anthropic") {
@@ -818,6 +829,17 @@ async function setApiKey(/** @type {string} */ key) {
   saveApiKey(k, provider);
   if (provider !== currentProvider()) changeSettings({ provider });
   else startBrain();
+  return null;
+}
+
+/** Where Ollama, LM Studio or another server is. Models are listed from it right away. Resolves an error, or null. */
+async function setAddress(/** @type {string} */ url) {
+  const provider = currentProvider();
+  if (!ADDRESS_PROVIDERS.includes(provider)) return `${PROVIDERS[provider].label}'s address is fixed.`;
+  const address = url.trim().replace(/\/+$/, "");
+  const problem = addressProblem(address);
+  if (problem) return problem;
+  changeSettings({ providerURLs: { [provider]: address } });
   return null;
 }
 
@@ -1087,10 +1109,12 @@ function bubbleExplain(plate) {
   openExplainer(plate, { near: focusPoint ?? cursor(), observed: target });
 }
 
+// What every Brain is made with for the current provider: its key (empty if it needs none) and where it is.
+const providerUI = () => ({ apiKey: loadApiKey() ?? "", provider: currentProvider(), baseURL: providerURL() ?? undefined });
+
 function startBrain() {
-  const apiKey = loadApiKey();
-  brain = apiKey
-    ? makeEngine({ apiKey, provider: currentProvider(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
+  brain = providerReady()
+    ? makeEngine({ ...providerUI(), point: guidePoint, confirm, status, explain: bubbleExplain, trace, documentsDir: documentsDir(), openFile })
     : null;
 }
 
@@ -1195,8 +1219,7 @@ function startTasks() {
     here,
     icon: ICON,
     makeBrain: (ui) => {
-      const apiKey = loadApiKey();
-      return apiKey ? makeEngine({ apiKey, provider: currentProvider(), trace, documentsDir: documentsDir(), openFile, ...ui }) : null;
+      return providerReady() ? makeEngine({ ...providerUI(), trace, documentsDir: documentsDir(), openFile, ...ui }) : null;
     },
     currentTarget: () => foregroundWindow(ownPids()),
     point,
@@ -1307,7 +1330,7 @@ function changeSettings(patch) {
   if (next.accent !== before.accent) paintAccentEverywhere();
   if (next.appearance !== before.appearance) applyAppearance();
   if (next.model !== before.model || next.effort !== before.effort || JSON.stringify(next.providerModels) !== JSON.stringify(before.providerModels)) setBrainDefaults(settings);
-  if (next.provider !== before.provider) {
+  if (next.provider !== before.provider || JSON.stringify(next.providerURLs) !== JSON.stringify(before.providerURLs)) {
     startBrain();
     refreshModels();
   }
@@ -1443,7 +1466,7 @@ function settingsState() {
     },
     taken: takenHotkeys(),
     key: { saved: fs.existsSync(keyFile()), fromEnv: !!envKey(), env: PROVIDERS[currentProvider()].keyEnv },
-    providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, keyFrom: p.keyFrom, placeholder: p.placeholder, saved: !!envKey(p.id) || fs.existsSync(keyFile(p.id)) })),
+    providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, note: p.note, key: p.key, local: !!p.local, keyFrom: p.keyFrom, placeholder: p.placeholder, saved: !!envKey(p.id) || fs.existsSync(keyFile(p.id)), address: providerURL(p.id), defaultAddress: PROVIDERS[p.id].baseURL ?? null, ready: providerReady(p.id) })),
     providerModels: providerModelLists.get(currentProvider()) ?? { models: [], error: null, loading: false },
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
@@ -1519,9 +1542,11 @@ const settingsWindow = createSettingsWindow({
   capture: suspendHotkeys,
   preview: (sid, speed) => voice?.say(PREVIEW_LINE, { sid: Math.min(VOICES - 1, Math.max(0, Math.trunc(sid) || 0)), speed: Math.min(SPEED.max, Math.max(SPEED.min, speed || 1)) }),
   setKey: setApiKey,
+  setAddress,
   removeKey: () => {
     fs.rmSync(keyFile(), { force: true });
-    if (!envKey()) brain = null;
+    if (!envKey() && !providerReady()) brain = null;
+    else startBrain();
   },
   setStartup: (on) => process.platform === "win32" && setStartsWithWindows(on),
   clear: (what) => {

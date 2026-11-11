@@ -47,6 +47,9 @@ export function failureFor(/** @type {string} */ kind, /** @type {import("./prov
   const p = PROVIDERS[provider];
   if (kind === "billing_error") return `Your ${p.label} account is out of credit. Add some at ${p.keyFrom}, or switch provider in Settings › AI & privacy.`;
   if (kind === "account_on_hold") return `Your ${p.label} account is on hold. Check ${p.keyFrom}, then ask me again.`;
+  if (kind === "not_running") return `${p.label} isn't running on this PC. Start it, then ask me again.`;
+  if (kind === "unreachable") return `I couldn't reach ${p.label}. Check your connection and the address under Settings › AI & privacy.`;
+  if (kind === "authentication_failed" && p.key !== "required") return `${p.label} refused my request. Check the key under Settings › AI & privacy.`;
   return FAILURES[kind]?.replaceAll("Claude", p.label);
 }
 // A look taken when the bubble opened is used for a question asked within this long, and waited on at most this long.
@@ -517,6 +520,7 @@ const spokenNote = (lang) =>
  * @typedef {{
  *   apiKey?: string,
  *   provider?: import("./providers.js").ProviderId,
+ *   baseURL?: string,
  *   point: (bounds: import("./geometry.js").PhysicalRect, caption: string) => Promise<void>,
  *   confirm: import("./approvals.js").Ask["confirm"],
  *   status: (text: string) => void,
@@ -738,7 +742,7 @@ export class Brain {
   async turn() {
     if (this.provider !== "anthropic") {
       if (!this.model) throw new ProviderError("model_not_found", 404, "No model chosen.");
-      return chatTurn({ provider: this.provider, key: this.ui.apiKey ?? "", model: this.model, effort: this.effort, system: SYSTEM, tools: TOOLS, messages: this.messages, maxTokens: 32000, signal: this.abort.signal });
+      return chatTurn({ provider: this.provider, baseURL: this.ui.baseURL, key: this.ui.apiKey ?? "", model: this.model, effort: this.effort, system: SYSTEM, tools: TOOLS, messages: this.messages, maxTokens: 32000, signal: this.abort.signal });
     }
     return this.client.beta.messages
       .stream(

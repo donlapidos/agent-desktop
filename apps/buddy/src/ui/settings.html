@@ -155,6 +155,7 @@
   .field:focus { border-color: color-mix(in srgb, var(--buddy) 70%, transparent); }
   .field::placeholder { color: #6f7682; }
   .models { display: grid; gap: 6px; max-width: 440px; }
+  .provider-list { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); max-width: none; }
   .model { display: grid; grid-template-columns: 18px 1fr; gap: 2px 10px; align-items: start; padding: 10px 12px; border: 0; border-radius: 11px; background: var(--field); text-align: left; transition: background .15s, box-shadow .15s; }
   .model:hover { background: var(--field-hover); }
   .model .radio { grid-row: span 2; width: 16px; height: 16px; margin-top: 1px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px #4a4f59; }
@@ -337,14 +338,19 @@
 
     <section id="page-claude" hidden>
       <h2>AI &amp; privacy</h2>
-      <p class="lede">Buddy thinks with the AI provider you choose, on your own API key, or works inside Claude's own apps on your Claude plan. Questions, and what's on screen when you ask, go to that provider. Besides that, Buddy only downloads its voice models once and checks GitHub for updates.</p>
+      <p class="lede">Buddy thinks with the AI you choose: a provider on your own API key, or a model running on this PC. It can also work inside Claude's own apps on your Claude plan. Questions, and what's on screen when you ask, go to the AI you choose; with a model on this PC, they stay here. Besides that, Buddy only downloads its voice models once and checks GitHub for updates.</p>
       <div class="group">
         <h3>Provider</h3>
-        <p class="help">Each provider keeps its own key, so you can switch back and forth.</p>
-        <div class="seg" id="provider" role="group" aria-label="Provider"></div>
+        <p class="help">Each keeps its own key and address, so you can switch back and forth.</p>
+        <div class="models provider-list" id="provider" role="radiogroup" aria-label="Provider"></div>
       </div>
-      <div class="group">
-        <h3>API key</h3>
+      <div class="group" id="address-group" hidden>
+        <h3>Address</h3>
+        <div id="address"></div>
+        <p class="problem" id="address-problem"></p>
+      </div>
+      <div class="group" id="key-group">
+        <h3 id="key-title">API key</h3>
         <div id="key"></div>
         <p class="problem" id="key-problem"></p>
       </div>
@@ -584,12 +590,46 @@
   function renderClaude() {
     // A background update mustn't wipe a key being typed.
     if (document.activeElement?.id !== "key-input") renderKeyBox();
+    if (document.activeElement?.id !== "address-input") renderAddress();
     renderClaudeRest();
+  }
+
+  // Ollama, LM Studio and other servers: where they are. Saving it asks the server for its models straight away.
+  function renderAddress() {
+    const p = provider();
+    $("address-group").hidden = !(p.local || p.key === "optional");
+    if ($("address-group").hidden) return;
+    const input = el("input", { className: "field", id: "address-input", type: "url", value: p.address ?? "", placeholder: p.defaultAddress ?? "https://example.com/v1", spellcheck: false });
+    const save = el("button", { className: "btn primary", textContent: "Save address" });
+    const submit = async () => {
+      if (!input.value.trim()) return;
+      $("address-problem").textContent = "";
+      const res = await window.buddy.settingsAddress(input.value);
+      input.blur();
+      $("address-problem").textContent = res.error ?? "";
+      render(res.state);
+    };
+    save.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => e.key === "Enter" && submit());
+    const row = el("div", { className: "row" }, input, save);
+    if (p.defaultAddress && p.address !== p.defaultAddress) {
+      const reset = el("button", { className: "btn", textContent: "Use the usual one" });
+      reset.addEventListener("click", async () => render((await window.buddy.settingsAddress(p.defaultAddress)).state));
+      row.append(reset);
+    }
+    const note = p.local
+      ? `Where ${p.label} listens. The usual address works unless you changed it in ${p.label}. Get ${p.label} at ${p.keyFrom}.`
+      : "The server's address, ending in /v1 for most. Use https:// unless the server is on this PC or your local network.";
+    $("address").replaceChildren(row, el("p", { className: "note", textContent: note }));
   }
 
   function renderKeyBox() {
     const box = $("key");
     box.replaceChildren();
+    const p = provider();
+    $("key-group").hidden = p.key === "none";
+    $("key-title").textContent = p.key === "optional" ? "API key (if the server needs one)" : "API key";
+    if (p.key === "none") return;
     if (S.key.fromEnv) {
       box.append(el("div", { className: "status" }, el("span", { className: "dot" }), `Using ${S.key.env} from the environment.`));
     } else if (S.key.saved && !replacingKey) {
@@ -629,7 +669,7 @@
         row.append(cancel);
       }
       box.append(
-        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : `No ${provider().label} key yet. Buddy's own chat needs one; Use with Claude, below, doesn't.`),
+        el("div", { className: `status${S.key.saved ? "" : " none"}` }, el("span", { className: "dot" }), S.key.saved ? "Enter the new key." : provider().key === "optional" ? "No key saved. Add one only if the server asks for it." : `No ${provider().label} key yet. Buddy's own chat needs one; Use with Claude, below, doesn't.`),
         row,
         el("p", { className: "note", textContent: `Get one at ${provider().keyFrom}. It's stored encrypted with Windows and never shown again.` }),
       );
@@ -655,13 +695,26 @@
     select.onchange = () => set({ providerModels: { [s.provider]: select.value } });
     note.textContent = list.loading ? `Asking ${provider().label} which models your key can use…`
       : list.error ? list.error
-      : !provider().saved ? "Save a key above to see the models it can use."
+      : !provider().ready ? (provider().key === "required" ? "Save a key above to see the models it can use." : "Save the address above to see its models.")
+      : provider().local ? `Models you've downloaded in ${provider().label}. Pick one that can use tools; one that can also see images works best.`
       : "Models your key can use, best first. Pick one that can see images and use tools.";
   }
 
   function renderClaudeRest() {
     const s = S.settings;
-    segmented($("provider"), S.providers.map((p) => [p.id, p.label]), s.provider, (v) => { replacingKey = false; $("key-problem").textContent = ""; set({ provider: v }); });
+    $("provider").replaceChildren(...S.providers.map((p) => {
+      const b = el("button", { className: "model" }, el("span", { className: "radio" }), el("b", { textContent: p.label }), el("span", { textContent: p.note }));
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(p.id === s.provider));
+      b.addEventListener("click", () => {
+        if (p.id === s.provider) return;
+        replacingKey = false;
+        $("key-problem").textContent = "";
+        $("address-problem").textContent = "";
+        set({ provider: p.id });
+      });
+      return b;
+    }));
     renderModel();
     $("models").replaceChildren(...S.models.map((m) => {
       const b = el("button", { className: "model", disabled: S.fixed.model }, el("span", { className: "radio" }), el("b", { textContent: m.label }), el("span", { textContent: m.note }));

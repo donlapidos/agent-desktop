@@ -2,6 +2,7 @@
 // hand-edited, half-written or out-of-date file can never put Buddy in a state it can't handle: anything invalid
 // falls back to its default. Writes go to a temporary file first and replace the old one in a single step.
 import fs from "node:fs";
+import { addressProblem } from "./providers.js";
 
 /** Accent colours for the pointer, island, bubble and task windows. Each reads on both light and dark apps. */
 export const ACCENTS = Object.freeze({
@@ -24,7 +25,10 @@ export const MODELS = Object.freeze([
 export const EFFORTS = Object.freeze(["low", "medium", "high"]);
 // Who Buddy thinks with (providers.js). Each provider other than Anthropic has its own model, chosen from the list the
 // provider gives for the user's key, so model ids there are only checked for shape.
-export const PROVIDER_CHOICES = Object.freeze(["anthropic", "openai", "openrouter", "gemini", "deepseek"]);
+export const PROVIDER_CHOICES = Object.freeze(["anthropic", "openai", "openrouter", "gemini", "deepseek", "ollama", "lmstudio", "custom"]);
+// Where the providers that run at an address the user chooses are: Ollama and LM Studio (their usual address unless
+// changed) and another server (no default). providers.js addressProblem() decides which addresses are allowed.
+export const ADDRESS_PROVIDERS = Object.freeze(["ollama", "lmstudio", "custom"]);
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\/@-]{0,119}$/;
 export const TALK_BACK = Object.freeze(["spoken", "always", "never"]);
 export const APPEARANCES = Object.freeze(["system", "light", "dark"]);
@@ -57,6 +61,7 @@ export const DEFAULTS = Object.freeze({
   provider: "anthropic",
   model: "claude-opus-5-5",
   providerModels: Object.freeze({}),
+  providerURLs: Object.freeze({}),
   effort: "medium",
   dictateStop: "pause",
   language: "en",
@@ -73,7 +78,7 @@ export const DEFAULTS = Object.freeze({
  * @typedef {{ id: string, name: string, prompt: string, schedule: Schedule, enabled: boolean, lastRun: string | null }} Routine
  * @typedef {{
  *   voice: number, speed: number, talkBack: string, accent: string, appearance: string,
- *   hotkeys: Record<HotkeyName, string>, provider: string, model: string, providerModels: Record<string, string>, effort: string, dictateStop: string, language: string,
+ *   hotkeys: Record<HotkeyName, string>, provider: string, model: string, providerModels: Record<string, string>, providerURLs: Record<string, string>, effort: string, dictateStop: string, language: string,
  *   rope: string, trustedApps: string[], blockedApps: string[], routines: Routine[], autoUpdate: boolean,
  *   launchSetupDone: boolean,
  * }} Settings
@@ -161,6 +166,14 @@ function providerModels(value) {
   return out;
 }
 
+/** @returns {Record<string, string>} */
+function providerURLs(value) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const id of ADDRESS_PROVIDERS) if (typeof value?.[id] === "string" && value[id].length <= 300 && !addressProblem(value[id])) out[id] = value[id].replace(/\/+$/, "");
+  return out;
+}
+
 /**
  * A complete, valid settings object from anything: unknown keys are dropped, invalid values take their default.
  * @param {any} raw
@@ -189,6 +202,7 @@ export function normalize(raw) {
     provider: pick(r.provider, PROVIDER_CHOICES, DEFAULTS.provider),
     model: pick(r.model, MODELS.map((m) => m.id), DEFAULTS.model),
     providerModels: providerModels(r.providerModels),
+    providerURLs: providerURLs(r.providerURLs),
     effort: pick(r.effort, EFFORTS, DEFAULTS.effort),
     dictateStop: pick(r.dictateStop, DICTATE_STOP, DEFAULTS.dictateStop),
     language: pick(r.language, LANGUAGES, DEFAULTS.language),
@@ -217,12 +231,13 @@ export function update(current, patch) {
   }
   // A provider's model is changed one provider at a time; the others keep theirs.
   const models = p.providerModels && typeof p.providerModels === "object" ? { ...current.providerModels, ...p.providerModels } : current.providerModels;
-  const merged = { ...current, ...p, hotkeys, providerModels: models };
+  const urls = p.providerURLs && typeof p.providerURLs === "object" ? { ...current.providerURLs, ...p.providerURLs } : current.providerURLs;
+  const merged = { ...current, ...p, hotkeys, providerModels: models, providerURLs: urls };
   const next = normalize(merged);
   const rejected = [];
   for (const [k, v] of Object.entries(p)) {
-    if (k === "providerModels") {
-      for (const [id, model] of Object.entries(v ?? {})) if (next.providerModels[id] !== model) rejected.push(`providerModels.${id}`);
+    if (k === "providerModels" || k === "providerURLs") {
+      for (const [id, value] of Object.entries(v ?? {})) if (next[k][id] !== String(value).replace(/\/+$/, "")) rejected.push(`${k}.${id}`);
     } else if (k === "hotkeys") {
       for (const [name, accel] of Object.entries(v ?? {})) if (next.hotkeys[name] !== accel) rejected.push(`hotkeys.${name}`);
     } else if (Array.isArray(next[k])) {
