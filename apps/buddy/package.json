@@ -1,6 +1,6 @@
 {
   "name": "desktop-buddy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A Clicky-style desktop buddy: points at your screen to teach, and drives your apps when you ask. Built on agent-desktop.",
   "type": "module",

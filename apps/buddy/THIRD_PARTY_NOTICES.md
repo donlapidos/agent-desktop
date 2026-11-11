@@ -8,7 +8,9 @@ the following third-party software, fonts and models.
 | Component | Licence | Used for |
 |---|---|---|
 | [Electron](https://github.com/electron/electron) 45 | MIT | The app shell |
-| [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript) | Apache-2.0 | Calls to Claude, with the user's own API key |
+| [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript) | Apache-2.0 | Calls to Claude, with the user's own API key (other providers are called directly over HTTPS) |
+| [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) | MIT | Offering Buddy's tools to AI apps (MCP) |
+| [Zod](https://github.com/colinhacks/zod) | MIT | Tool schemas for the optional Agent SDK engine (used by the MCP SDK too) |
 | [docx](https://github.com/dolanmiu/docx) | MIT | Writing Word documents |
 | [electron-updater](https://github.com/electron-userland/electron-builder) | MIT | Installing updates from GitHub releases |
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (`sherpa-onnx-node`) | Apache-2.0 | Running the speech models |
