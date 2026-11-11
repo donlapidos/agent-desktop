@@ -10,7 +10,7 @@ import { AgentBrain } from "./agent-brain.js";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
 import { allowRules, claudeStatus, launchSpec, setCode, setCodeAllowed, setDesktop, staleClaude } from "./claude-setup.js";
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
-import { PROVIDERS, ProviderError, addressProblem, keyFits, listModels, providerForKey } from "./providers.js";
+import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, providerForKey, useCapsStore, verdict } from "./providers.js";
 import { dictationPaste, returnFocus } from "./approvals.js";
 import { elementAt, elementsAt, foregroundWindow, listWindows, perform, resolveBinary, windowAt, windowsAt } from "./desktop.js";
 import { renderExplainer } from "./explainer.js";
@@ -151,6 +151,32 @@ function saveApiKey(/** @type {string} */ key, /** @type {ProviderId} */ provide
 /** @type {Map<ProviderId, { models: string[], error: string | null, loading: boolean }>} */
 const providerModelLists = new Map();
 
+// What each model of the current provider can do (providers.js verdict), for Settings to show beside it.
+function modelListState() {
+  const provider = currentProvider();
+  const list = providerModelLists.get(provider) ?? { models: [], error: null, loading: false };
+  const chosen = settings.providerModels[provider];
+  const shown = list.models.length ? list.models : chosen ? [chosen] : [];
+  return { ...list, verdicts: Object.fromEntries(shown.map((m) => [m, verdict(capsOf(provider, providerURL(provider) ?? undefined, m))])) };
+}
+
+// What Buddy has learned about models' abilities, kept between runs.
+const capsFile = () => path.join(app.getPath("userData"), "model-caps.json");
+function loadModelCaps() {
+  let saved = {};
+  try {
+    saved = JSON.parse(fs.readFileSync(capsFile(), "utf8"));
+  } catch {}
+  useCapsStore(saved, (entries) => {
+    try {
+      fs.writeFileSync(capsFile(), JSON.stringify(entries, null, 1));
+    } catch (err) {
+      trace({ kind: "model-caps-save-failed", message: String(err) });
+    }
+    settingsWindow?.refresh();
+  });
+}
+
 // Where a provider is: its fixed address, or the one the user gave (Ollama and LM Studio default to their usual one).
 const providerURL = (/** @type {ProviderId} */ provider = currentProvider()) => settings.providerURLs[provider] ?? PROVIDERS[provider].baseURL ?? null;
 
@@ -170,13 +196,17 @@ async function refreshModels(/** @type {ProviderId} */ provider = currentProvide
   let models = [];
   try {
     models = await listModels(provider, key, { baseURL });
+    await describeModels(provider, key, models, { baseURL });
     if (!models.length) error = PROVIDERS[provider].local ? `${PROVIDERS[provider].label} has no models yet. Download one in ${PROVIDERS[provider].label}, then come back.` : `${PROVIDERS[provider].label} didn't list any chat models for this key.`;
   } catch (err) {
     error = err instanceof ProviderError ? (failureFor(err.kind, provider) ?? err.message) : `Couldn't reach ${PROVIDERS[provider].label}: ${err?.message ?? err}`;
   }
   providerModelLists.set(provider, { models, error, loading: false });
   const chosen = settings.providerModels[provider];
-  if (models.length && (!chosen || !models.includes(chosen))) changeSettings({ providerModels: { [provider]: models[0] } });
+  // The default is the best-placed model known to work well, else the first that isn't known to lack tools.
+  const fit = (want) => models.find((m) => want.includes(verdict(capsOf(provider, baseURL, m))));
+  const pick = fit(["good"]) ?? fit(["unknown", "no_images"]) ?? models[0];
+  if (models.length && (!chosen || !models.includes(chosen))) changeSettings({ providerModels: { [provider]: pick } });
   else settingsWindow?.refresh();
   return error;
 }
@@ -1467,7 +1497,7 @@ function settingsState() {
     taken: takenHotkeys(),
     key: { saved: fs.existsSync(keyFile()), fromEnv: !!envKey(), env: PROVIDERS[currentProvider()].keyEnv },
     providers: Object.values(PROVIDERS).map((p) => ({ id: p.id, label: p.label, note: p.note, key: p.key, local: !!p.local, keyFrom: p.keyFrom, placeholder: p.placeholder, saved: !!envKey(p.id) || fs.existsSync(keyFile(p.id)), address: providerURL(p.id), defaultAddress: PROVIDERS[p.id].baseURL ?? null, ready: providerReady(p.id) })),
-    providerModels: providerModelLists.get(currentProvider()) ?? { models: [], error: null, loading: false },
+    providerModels: modelListState(),
     startsWithWindows: process.platform === "win32" && startsWithWindows(),
     data: { explainers, logBytes },
     claude: claudeStatus(),
@@ -1596,6 +1626,7 @@ app.whenReady().then(() => {
   if (loaded.recovered) trace({ kind: "settings-recovered", note: "settings.json couldn't be read; kept as settings.json.bad" });
   applyAppearance();
   setBrainDefaults(settings);
+  loadModelCaps();
   refreshModels().catch(() => {});
   setAgentPolicy(settings);
   app.setAppUserModelId(APP_ID);

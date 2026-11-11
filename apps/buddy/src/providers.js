@@ -99,6 +99,127 @@ export async function listModels(/** @type {ProviderId} */ provider, /** @type {
   return chatModels(provider, (body.data ?? []).map((m) => String(m.id).replace(/^models\//, "")));
 }
 
+// ---------- What a model can do ----------
+// Buddy needs a model that can use tools (to read the screen and point) and works best with one that can also see
+// images (screenshots, the pointer crop for Explain). What a model can do comes, in order of trust, from what Buddy
+// learned using it (a refusal) or its server reports (Ollama, LM Studio, OpenRouter), then from its family's name.
+// Learned and reported abilities are kept per address and model and saved by the caller (useCapsStore).
+
+/** @typedef {{ tools: boolean | null, vision: boolean | null }} Caps  null: not known */
+/** @typedef {"good" | "no_images" | "no_tools" | "unknown"} Verdict */
+
+/** @type {Map<string, { tools?: boolean, vision?: boolean }>} */
+const known = new Map();
+/** @type {((entries: Record<string, { tools?: boolean, vision?: boolean }>) => void) | null} */
+let saveKnown = null;
+const capsKey = (/** @type {string | undefined} */ baseURL, /** @type {string} */ model) => `${baseURL ?? ""}|${model}`;
+
+/** Starts from what was learned before, and saves what's learned from now on. */
+export function useCapsStore(/** @type {Record<string, any>} */ entries, /** @type {(entries: Record<string, { tools?: boolean, vision?: boolean }>) => void} */ save) {
+  known.clear();
+  for (const [k, v] of Object.entries(entries ?? {})) {
+    if (!v || typeof v !== "object") continue;
+    known.set(k, { ...(typeof v.tools === "boolean" ? { tools: v.tools } : {}), ...(typeof v.vision === "boolean" ? { vision: v.vision } : {}) });
+  }
+  saveKnown = save;
+}
+
+/** Records what a model turned out to be able, or not able, to do. Unknowns (null) change nothing. */
+export function learnCaps(/** @type {string | undefined} */ baseURL, /** @type {string} */ model, /** @type {{ tools?: boolean | null, vision?: boolean | null }} */ caps) {
+  const k = capsKey(baseURL, model);
+  const before = known.get(k) ?? {};
+  const next = { ...before };
+  if (typeof caps.tools === "boolean") next.tools = caps.tools;
+  if (typeof caps.vision === "boolean") next.vision = caps.vision;
+  if (JSON.stringify(next) === JSON.stringify(before)) return;
+  known.set(k, next);
+  saveKnown?.(Object.fromEntries(known));
+}
+
+// Vision models among local and open models, by name.
+const SEES = /(llava|vision|[-_.]vl\b|vl[-_:]|pixtral|gemma-?3|minicpm-v|moondream|bakllava|mistral-small-3\.[12])/i;
+
+/** What a model's family is known for, by provider and name. @returns {Caps} */
+export function familyCaps(/** @type {ProviderId} */ provider, /** @type {string} */ model) {
+  if (provider === "anthropic") return { tools: true, vision: true };
+  if (provider === "openai") return /^(gpt-|o\d|chatgpt-)/.test(model) ? { tools: true, vision: !/^(gpt-3\.5|gpt-4$|gpt-4-0|o1-mini|o3-mini)/.test(model) } : { tools: null, vision: null };
+  if (provider === "gemini" && /^gemini/.test(model)) return { tools: true, vision: true };
+  if (provider === "deepseek") return { tools: true, vision: false };
+  return { tools: null, vision: SEES.test(model) ? true : null };
+}
+
+/** @returns {Caps} */
+export function capsOf(/** @type {ProviderId} */ provider, /** @type {string | undefined} */ baseURL, /** @type {string} */ model) {
+  const learned = known.get(capsKey(baseURL, model)) ?? {};
+  const family = familyCaps(provider, model);
+  return { tools: learned.tools ?? family.tools, vision: learned.vision ?? family.vision };
+}
+
+/** @returns {Verdict} */
+export function verdict(/** @type {Caps} */ caps) {
+  if (caps.tools === false) return "no_tools";
+  if (caps.vision === false) return "no_images";
+  return caps.tools && caps.vision ? "good" : "unknown";
+}
+
+/**
+ * Asks the server what each model can do, where it says: Ollama (/api/show), LM Studio (/api/v0/models), OpenRouter
+ * (/models). What it reports is learned. Other providers report nothing; their families say enough.
+ * @param {ProviderId} provider @param {string} key @param {string[]} models
+ */
+export async function describeModels(provider, key, models, { baseURL = PROVIDERS[provider].baseURL, fetchImpl = fetch } = {}) {
+  const root = String(baseURL ?? "").replace(/\/v1\/?$/, "");
+  /** @param {string} url @param {RequestInit} [init] */
+  const get = async (url, init = {}) => {
+    try {
+      const res = await fetchImpl(url, { ...init, headers: { ...authHeaders(key), "content-type": "application/json" }, signal: AbortSignal.timeout(10_000) });
+      return res.ok ? await res.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  if (provider === "ollama") {
+    await Promise.all(
+      models.map(async (model) => {
+        const info = await get(`${root}/api/show`, { method: "POST", body: JSON.stringify({ model }) });
+        if (Array.isArray(info?.capabilities)) learnCaps(baseURL, model, { tools: info.capabilities.includes("tools"), vision: info.capabilities.includes("vision") });
+      }),
+    );
+  } else if (provider === "lmstudio") {
+    const list = await get(`${root}/api/v0/models`);
+    for (const m of list?.data ?? []) {
+      if (!models.includes(m.id)) continue;
+      const tools = Array.isArray(m.capabilities) && m.capabilities.includes("tool_use") ? true : null;
+      learnCaps(baseURL, m.id, { vision: m.type === "vlm" ? true : m.type === "llm" ? false : null, tools });
+    }
+  } else if (provider === "openrouter") {
+    const list = await get(`${baseURL}/models`);
+    for (const m of list?.data ?? []) {
+      if (!models.includes(m.id)) continue;
+      const inputs = m.architecture?.input_modalities;
+      const params = m.supported_parameters;
+      learnCaps(baseURL, m.id, { vision: Array.isArray(inputs) ? inputs.includes("image") : null, tools: Array.isArray(params) ? params.includes("tools") : null });
+    }
+  }
+}
+
+// ---------- Leaving images out, for a model that can't see them ----------
+
+const NO_IMAGE = "[An image was here, but this model can't see images.]";
+const NO_SCREENSHOT = "(No screenshot: this model can't see images. Use look or read_page to read the window instead.)";
+
+/** Whether the conversation holds any image, in a message or a tool result. */
+export const hasImages = (/** @type {any[]} */ messages) =>
+  messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "image" || (b.type === "tool_result" && imagesOf(b.content).length)));
+
+/** The conversation with every image replaced by a line saying it can't be seen. */
+export function withoutImages(/** @type {any[]} */ messages) {
+  const strip = (content, placeholder) => (Array.isArray(content) ? content.map((b) => (b.type === "image" ? { type: "text", text: placeholder } : b)) : content);
+  return messages.map((m) =>
+    Array.isArray(m.content) ? { ...m, content: strip(m.content, NO_IMAGE).map((b) => (b.type === "tool_result" ? { ...b, content: strip(b.content, NO_SCREENSHOT) } : b)) } : m,
+  );
+}
+
 // ---------- Errors ----------
 
 /** A failed call, sorted into one of brain.js FAILURES' kinds. */
@@ -342,21 +463,28 @@ export function fromResponses(response) {
 
 // Optional fields a provider or model may refuse ("Unsupported parameter: reasoning_effort"); a refused one is
 // left out from then on for that model.
+// How servers say a model can't take images ("model does not support images", "unknown variant `image_url`") or
+// tools ("gemma3:4b does not support tools"). A refusal about reasoning with tools is a refused field, not this.
+const REFUSES = /(not support|unsupported|doesn't support|cannot|can't|unknown variant|is only supported|expected `text`)/i;
+const ABOUT_IMAGES = /(image|vision|multimodal)/i;
+const ABOUT_TOOLS = /(\btools?\b|function)/i;
 const OPTIONAL = ["reasoning_effort", "reasoning", "max_completion_tokens", "max_output_tokens", "max_tokens", "stream_options"];
 /** @type {Map<string, Set<string>>} */
 const refused = new Map();
 
 /**
  * One model turn on a provider other than Anthropic, streamed: OpenAI through Responses, the rest through Chat
- * Completions. Resolves the Anthropic-shaped reply.
+ * Completions. Resolves the Anthropic-shaped reply. Images go only to a model not known to be blind; one that refuses
+ * them is remembered as blind and the turn retried without them. One that refuses tools throws "no_tools".
  * @param {{ provider: ProviderId, key: string, model: string, effort: string, system: string, tools: any[], messages: any[], maxTokens: number, baseURL?: string, signal?: AbortSignal, fetchImpl?: typeof fetch }} o
  */
-export async function chatTurn({ provider, key, model, signal, baseURL = PROVIDERS[provider].baseURL, fetchImpl = fetch, ...rest }) {
+export async function chatTurn({ provider, key, model, signal, baseURL = PROVIDERS[provider].baseURL, fetchImpl = fetch, messages, ...rest }) {
   const responses = provider === "openai";
   const memo = `${baseURL}|${model}`;
   const drop = refused.get(memo) ?? new Set();
-  for (let attempt = 0; attempt <= OPTIONAL.length; attempt++) {
-    const body = responses ? responsesRequest({ model, drop, ...rest }) : chatRequest({ provider, model, drop, ...rest });
+  let sent = capsOf(provider, baseURL, model).vision === false ? withoutImages(messages) : messages;
+  for (let attempt = 0; attempt <= OPTIONAL.length + 1; attempt++) {
+    const body = responses ? responsesRequest({ model, drop, messages: sent, ...rest }) : chatRequest({ provider, model, drop, messages: sent, ...rest });
     const res = await reach(provider, () =>
       fetchImpl(`${baseURL}${responses ? "/responses" : "/chat/completions"}`, {
         method: "POST",
@@ -365,12 +493,24 @@ export async function chatTurn({ provider, key, model, signal, baseURL = PROVIDE
         signal,
       }),
     );
-    if (res.ok) return responses ? readResponses(res) : readStream(res);
+    if (res.ok) {
+      const reply = await (responses ? readResponses(res) : readStream(res));
+      if (reply.content.some((b) => b.type === "tool_use")) learnCaps(baseURL, model, { tools: true });
+      return reply;
+    }
     const err = await providerError(res);
-    const field = err.kind === "invalid_request" ? OPTIONAL.find((f) => f in body && err.message.includes(f)) : undefined;
-    if (!field) throw err;
-    drop.add(field);
-    refused.set(memo, drop);
+    if (["authentication_failed", "billing_error", "rate_limit", "model_not_found"].includes(err.kind)) throw err;
+    const field = OPTIONAL.find((f) => f in body && err.message.includes(f));
+    if (field) {
+      drop.add(field);
+      refused.set(memo, drop);
+    } else if (REFUSES.test(err.message) && ABOUT_IMAGES.test(err.message) && hasImages(sent)) {
+      learnCaps(baseURL, model, { vision: false });
+      sent = withoutImages(sent);
+    } else if (REFUSES.test(err.message) && ABOUT_TOOLS.test(err.message) && !/reasoning/i.test(err.message) && rest.tools.length) {
+      learnCaps(baseURL, model, { tools: false });
+      throw new ProviderError("no_tools", err.status, err.message);
+    } else throw err;
   }
   throw new ProviderError("invalid_request", 400, "The provider refused every form of the request.");
 }

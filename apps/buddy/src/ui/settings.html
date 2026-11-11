@@ -691,13 +691,17 @@
     const ids = list.models.length ? list.models : chosen ? [chosen] : [];
     const select = $("model-select");
     select.disabled = S.fixed.model || !ids.length;
-    select.replaceChildren(...ids.map((id) => el("option", { value: id, textContent: id, selected: id === chosen })));
+    const BADGE = { good: "works well", no_images: "can't see images", no_tools: "can't use tools" };
+    const v = (id) => list.verdicts?.[id] ?? "unknown";
+    select.replaceChildren(...ids.map((id) => el("option", { value: id, textContent: BADGE[v(id)] ? `${id}  ·  ${BADGE[v(id)]}` : id, selected: id === chosen })));
     select.onchange = () => set({ providerModels: { [s.provider]: select.value } });
     note.textContent = list.loading ? `Asking ${provider().label} which models your key can use…`
       : list.error ? list.error
       : !provider().ready ? (provider().key === "required" ? "Save a key above to see the models it can use." : "Save the address above to see its models.")
-      : provider().local ? `Models you've downloaded in ${provider().label}. Pick one that can use tools; one that can also see images works best.`
-      : "Models your key can use, best first. Pick one that can see images and use tools.";
+      : { good: "Works well with Buddy: it can use tools and see your screen.",
+          no_images: "Can't see images, so Buddy reads your windows as text instead of screenshots. Guiding works; questions about pictures and charts won't.",
+          no_tools: "Can't use tools, so it can't read your screen or point. Pick another.",
+        }[v(chosen)] ?? (provider().local ? `Buddy doesn't know yet whether this model can use tools and see images; it finds out the first time you ask. Download models in ${provider().label}.` : "Buddy doesn't know yet whether this model can use tools and see images; it finds out the first time you ask.");
   }
 
   function renderClaudeRest() {

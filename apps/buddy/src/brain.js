@@ -4,7 +4,7 @@ import { askUser, requestApproval } from "./approvals.js";
 import { decide } from "./policy.js";
 import { findControl, observe, perform, renderReading, renderTree, snapshotResilient, waitForProgress } from "./desktop.js";
 import { writeDocx } from "./documents.js";
-import { PROVIDERS, ProviderError, chatTurn } from "./providers.js";
+import { PROVIDERS, ProviderError, capsOf, chatTurn } from "./providers.js";
 
 /** @typedef {"low" | "medium" | "high" | "xhigh" | "max"} Effort */
 
@@ -41,12 +41,18 @@ export const FAILURES = {
   model_not_found: "The model chosen in Settings isn't available on your account. Pick another under AI & privacy.",
 };
 
+// Told to a model that can't see images.
+const BLIND = `This model can't see images. Work from what look and read_page return (the window's controls and text);
+there is no screenshot tool, and any image the user sends arrives as a note that it can't be shown. When they ask
+about a picture, chart or drawing, say you can't see it and describe what the window's text says instead.`;
+
 /** FAILURES in the words of the provider Buddy is using. */
 export function failureFor(/** @type {string} */ kind, /** @type {import("./providers.js").ProviderId} */ provider = "anthropic") {
   if (provider === "anthropic") return FAILURES[kind];
   const p = PROVIDERS[provider];
   if (kind === "billing_error") return `Your ${p.label} account is out of credit. Add some at ${p.keyFrom}, or switch provider in Settings › AI & privacy.`;
   if (kind === "account_on_hold") return `Your ${p.label} account is on hold. Check ${p.keyFrom}, then ask me again.`;
+  if (kind === "no_tools") return "The model chosen in Settings can't use tools, and I need them to read your screen and point. Pick one marked \"works well\" under Settings › AI & privacy.";
   if (kind === "not_running") return `${p.label} isn't running on this PC. Start it, then ask me again.`;
   if (kind === "unreachable") return `I couldn't reach ${p.label}. Check your connection and the address under Settings › AI & privacy.`;
   if (kind === "authentication_failed" && p.key !== "required") return `${p.label} refused my request. Check the key under Settings › AI & privacy.`;
@@ -742,7 +748,23 @@ export class Brain {
   async turn() {
     if (this.provider !== "anthropic") {
       if (!this.model) throw new ProviderError("model_not_found", 404, "No model chosen.");
-      return chatTurn({ provider: this.provider, baseURL: this.ui.baseURL, key: this.ui.apiKey ?? "", model: this.model, effort: this.effort, system: SYSTEM, tools: TOOLS, messages: this.messages, maxTokens: 32000, signal: this.abort.signal });
+      // A model that can't use tools can't drive Buddy at all; one that can't see images works from the window's
+      // text, without the screenshot tool, and is told so.
+      const caps = capsOf(this.provider, this.ui.baseURL, this.model);
+      if (caps.tools === false) throw new ProviderError("no_tools", 400, `${this.model} can't use tools.`);
+      const blind = caps.vision === false;
+      return chatTurn({
+        provider: this.provider,
+        baseURL: this.ui.baseURL,
+        key: this.ui.apiKey ?? "",
+        model: this.model,
+        effort: this.effort,
+        system: blind ? `${SYSTEM}\n\n${BLIND}` : SYSTEM,
+        tools: blind ? TOOLS.filter((t) => t.name !== "screenshot") : TOOLS,
+        messages: this.messages,
+        maxTokens: 32000,
+        signal: this.abort.signal,
+      });
     }
     return this.client.beta.messages
       .stream(
