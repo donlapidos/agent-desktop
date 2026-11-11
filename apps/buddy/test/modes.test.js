@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BUSY, NEXT, canMove } from "../src/modes.js";
+import { BUSY, NEXT, TASK_NEXT, canMove, canMoveTask, taskBusy } from "../src/modes.js";
 
 const MODES = Object.keys(NEXT);
 
@@ -35,4 +35,21 @@ test("the moves Buddy relies on are allowed, and the dangerous ones aren't", () 
 test("the tables can't be changed at runtime", () => {
   assert.ok(Object.isFrozen(NEXT));
   assert.ok(Object.isFrozen(BUSY));
+});
+
+test("task states: each moves only where it may, every one can get back to idle, and busy follows the state", () => {
+  const states = Object.keys(TASK_NEXT);
+  for (const [from, tos] of Object.entries(TASK_NEXT)) for (const to of tos) assert.ok(states.includes(to), `${from} -> ${to}`);
+  const reach = (from, seen = new Set()) => {
+    if (from === "idle" || seen.has(from)) return from === "idle";
+    seen.add(from);
+    return TASK_NEXT[from].some((to) => reach(to, seen));
+  };
+  for (const s of states) assert.ok(reach(s), `${s} can't get back to idle`);
+  // The path an answer takes, approval and all, and its status lines (working to working) are allowed.
+  for (const [a, b] of [["idle", "working"], ["working", "working"], ["working", "confirm"], ["confirm", "working"], ["working", "done"], ["done", "idle"], ["working", "error"], ["error", "working"], ["done", "working"]]) assert.ok(canMoveTask(a, b), `${a} -> ${b}`);
+  // An answer can't finish while it waits for an OK, and an idle task can't wait for one.
+  for (const [a, b] of [["confirm", "done"], ["confirm", "idle"], ["idle", "confirm"], ["idle", "done"], ["error", "done"]]) assert.ok(!canMoveTask(a, b), `${a} -> ${b}`);
+  assert.deepEqual(states.filter(taskBusy), ["working", "confirm"]);
+  assert.ok(Object.isFrozen(TASK_NEXT));
 });

@@ -74,9 +74,20 @@ if (!process.env.BUDDY_GPU) app.disableHardwareAcceleration();
 app.on("second-instance", () => summon());
 
 let tray, bubble, island, brain, tasks, voice, updates;
-let spokenTurn = false; // the question being answered was said out loud
-let spokenLang = "en"; // the language it was said in (detected when Settings asks for it)
-let heardLang = "en"; // the language of the last thing heard, waiting for the bubble to send it
+let heardLang = "en"; // the language of the last thing heard, waiting for the bubble to send it as a question
+
+// The answer running (or the last one): whether its question was said out loud and in what language (spoken
+// answers are read back, in that language), when it started, and whether it showed a plate. Each answer replaces it
+// whole, so nothing of one question carries into the next.
+/** @typedef {{ spoken: boolean, lang: string, at: number, explainerShown: boolean }} Turn */
+/** @type {Turn} */
+let turn = { spoken: false, lang: "en", at: 0, explainerShown: false };
+const startTurn = ({ spoken = false, lang = "en" } = {}) => (turn = { spoken, lang, at: Date.now(), explainerShown: false });
+
+// What the next question is about: the window the user was in and the point on screen (plates open beside it). Set
+// together, when they call Buddy, finish marking, or click something to explain.
+/** @type {{ window: any, point: DipPoint | null }} */
+let about = { window: null, point: null };
 // What the island shows is worked out from what Buddy is doing (island-state.js). These are the facts that aren't
 // held anywhere else: the running activity's latest line, an AI app's call, a download, and the last outcome.
 const islandFacts = {
@@ -126,11 +137,6 @@ let pendingMarks = null; // what the user highlighted, waiting for their questio
 let markWin = null; // the freeze-frame of the screen the user draws on
 let markDisplay = null;
 let bubbleHideTimer = null;
-let lastAskAt = 0;
-let target = null;
-/** @type {DipPoint | null} */
-let focusPoint = null; // where the current question is about; explainers open beside it
-let explainerShown = false;
 
 const ownPids = () => [process.pid, ...app.getAppMetrics().map((m) => m.pid)];
 
@@ -610,17 +616,17 @@ function toggle() {
 function releaseFocus() {
   bubble.blur();
   // Stepping back doesn't give the keyboard to another app on Windows, so hand it to the window the user was in.
-  if (target) takeTurn(() => perform(returnFocus(target))).catch(() => {});
+  if (about.window) takeTurn(() => perform(returnFocus(about.window))).catch(() => {});
 }
 
 async function summon() {
   if (mode === "working" || mode === "reading-marks") return showBubble({ focus: false });
-  if (Date.now() - lastAskAt > IDLE_RESET_MS) brain?.reset();
-  target = await foregroundWindow(ownPids());
-  brain?.glance(target);
-  focusPoint = cursor();
+  if (Date.now() - turn.at > IDLE_RESET_MS) brain?.reset();
+  const win = await foregroundWindow(ownPids());
+  about = { window: win, point: cursor() };
+  brain?.glance(win);
   bubble.webContents.send("summon", {
-    target: target ? `${target.app_name} — ${target.title}` : null,
+    target: win ? `${win.app_name} — ${win.title}` : null,
     needsKey: !brain,
   });
   showBubble();
@@ -674,18 +680,15 @@ function explainAt(dipPoint, question) {
 // Expects mode "working", set by the caller.
 /** @param {DipPoint} dipPoint @param {string} [question] */
 async function runExplain(dipPoint, question) {
-  spokenTurn = false;
-  lastAskAt = Date.now();
-  focusPoint = dipPoint;
-  explainerShown = false;
+  startTurn();
   progress("Looking at that…");
   try {
     const physical = toPhysicalPoint(dipPoint);
     const [win, shot] = await Promise.all([windowAt(physical, ownPids()), captureAround(dipPoint)]);
-    target = win;
+    about = { window: win, point: dipPoint };
     const element = await elementAt(win, physical);
     const reply = await brain.explain({ ...shot, element, target: win, question });
-    if (explainerShown) {
+    if (turn.explainerShown) {
       notice(oneLine(reply));
     } else {
       notice("Answered");
@@ -833,10 +836,10 @@ async function finishMarking({ image, strokes } = {}) {
         elements: dedupe(found.slice(i * 3, i * 3 + 3).filter(Boolean)),
       })),
     };
-    target = pendingMarks.target;
     const last = marks.at(-1).bbox;
-    focusPoint = asDipPoint({ x: last.x + last.width, y: last.y + last.height });
-    bubble.webContents.send("summon", { target: target ? target.app_name + " — " + target.title : null, needsKey: !brain });
+    about = { window: pendingMarks.target, point: asDipPoint({ x: last.x + last.width, y: last.y + last.height }) };
+    const win = about.window;
+    bubble.webContents.send("summon", { target: win ? win.app_name + " — " + win.title : null, needsKey: !brain });
     bubble.webContents.send("marks", pendingMarks.marks.map((m) => ({ n: m.n, label: markLabel(m) })));
     enter("idle");
     showBubble();
@@ -944,10 +947,7 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
   if (mode === "listening") voice.cancelListening();
   else if (mode !== "idle") return { reply: BUSY[mode] };
   enter("working");
-  lastAskAt = Date.now();
-  explainerShown = false;
-  spokenTurn = !!opts?.spoken;
-  spokenLang = spokenTurn ? heardLang : "en";
+  startTurn({ spoken: !!opts?.spoken, lang: opts?.spoken ? heardLang : "en" });
   voice?.hush();
   releaseFocus();
   progress("Thinking…");
@@ -955,8 +955,8 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
   try {
     const withMarks = pendingMarks;
     pendingMarks = null;
-    const how = { spoken: spokenTurn, lang: spokenLang };
-    reply = withMarks ? await brain.askWithMarks(text, withMarks, how) : await brain.ask(text, target, how);
+    const how = { spoken: turn.spoken, lang: turn.lang };
+    reply = withMarks ? await brain.askWithMarks(text, withMarks, how) : await brain.ask(text, about.window, how);
   } catch (err) {
     notice("Something broke");
     return { reply: `Something broke: ${err.message}` };
@@ -966,7 +966,7 @@ ipcMain.handle("ask", async (_e, text, opts = {}) => {
   }
   notice(oneLine(reply));
   // After the mode is back to idle, so the island shows Buddy speaking (and a click stops it).
-  if (talksBack(spokenTurn)) speak(reply);
+  if (talksBack(turn.spoken)) speak(reply);
   return { reply };
 });
 
@@ -1103,7 +1103,7 @@ function answerApproval(decision) {
 function guidePoint(bounds, caption) {
   if (mode === "working" && bubble.isVisible() && !waitingForOk()) hideBubble();
   // In a spoken conversation Buddy says each step as it points, the way a person beside you would.
-  if (caption && talksBack(spokenTurn)) voice.say(caption);
+  if (caption && talksBack(turn.spoken)) voice.say(caption);
   return point(bounds, caption);
 }
 
@@ -1225,7 +1225,7 @@ function startVoice() {
     cacheDir: process.env.BUDDY_MODELS_DIR ?? path.join(app.getPath("userData"), "models"),
     // BUDDY_VOICE (0-9) overrides the voice chosen in Settings.
     // Spoken replies use the language the question was asked in.
-    getVoice: () => ({ sid: process.env.BUDDY_VOICE ? Number(process.env.BUDDY_VOICE) : settings.voice, speed: settings.speed, lang: spokenTurn ? spokenLang : "en" }),
+    getVoice: () => ({ sid: process.env.BUDDY_VOICE ? Number(process.env.BUDDY_VOICE) : settings.voice, speed: settings.speed, lang: turn.spoken ? turn.lang : "en" }),
     getLanguage: () => settings.language,
     onState: onVoiceState,
     onLevel: (level) => island?.isDestroyed() || island?.webContents.send("voice-level", level),
@@ -1284,8 +1284,8 @@ const openFile = (file) => shell.openPath(file);
 
 // The bubble's plates open beside what the user pointed at and say which app it was in.
 function bubbleExplain(plate) {
-  explainerShown = true;
-  openExplainer(plate, { near: focusPoint ?? cursor(), observed: target });
+  turn.explainerShown = true;
+  openExplainer(plate, { near: about.point ?? cursor(), observed: about.window });
 }
 
 // What every Brain is made with for the current provider: its key (empty if it needs none) and where it is.
@@ -1440,6 +1440,7 @@ function startTasks() {
     onChange: (list) => {
       if (island && !island.isDestroyed()) island.webContents.send("tasks", list);
     },
+    trace,
   });
 }
 
@@ -1450,7 +1451,7 @@ async function newTask({ fromBubble = false } = {}) {
   if (fromBubble && mode !== "idle") return progress("Let Buddy finish this answer, then make it a task");
   let result;
   if (fromBubble && brain.transcript().length) {
-    result = await tasks.create({ brain, target });
+    result = await tasks.create({ brain, target: about.window });
     if (!result.error) {
       startBrain();
       clearMarks();

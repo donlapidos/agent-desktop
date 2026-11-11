@@ -3,6 +3,7 @@
 // (see takeTurn in brain.js), and each task asks for approval in its own window.
 import { BrowserWindow, ipcMain, screen } from "electron";
 import path from "node:path";
+import { canMoveTask, taskBusy } from "./modes.js";
 
 const TASK = { width: 420, height: 560 };
 const MAX_TASKS = 6;
@@ -21,9 +22,10 @@ const shorten = (text, n = 34) => {
  *   release: (owner: string, ms?: number) => void,     // lets go of the pointer if that owner still has it
  *   explain: (plate: object, observed: any) => void,  // opens a plate seen in `observed` (the task's window)
  *   onChange: (tasks: object[]) => void,               // the island's chips
+ *   trace?: (entry: object) => void,                   // timing.log: a refused state change is a bug
  * }} deps
  */
-export function createTasks({ here, icon, makeBrain, currentTarget, point, release, explain, onChange }) {
+export function createTasks({ here, icon, makeBrain, currentTarget, point, release, explain, onChange, trace }) {
   const tasks = new Map();
   let seq = 0;
 
@@ -35,11 +37,18 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
     if (!t.win.isDestroyed()) t.win.webContents.send(channel, payload);
   };
 
+  // Every change of a task's state goes through here; a move modes.js TASK_NEXT doesn't allow is refused and logged.
+  /** @param {any} t @param {import("./modes.js").TaskState} state @param {string} [line] */
   function setState(t, state, line) {
+    if (!canMoveTask(t.state, state)) {
+      trace?.({ kind: "refused-task-state", task: t.id, from: t.state, to: state });
+      return false;
+    }
     t.state = state;
     t.line = line ?? (state === "idle" || state === "done" ? t.brain?.transcript().filter((m) => m.role === "buddy").at(-1)?.text ?? "" : t.line);
     send(t, "task-state", { state, line, title: t.title });
     changed();
+    return true;
   }
 
   // New windows cascade down from the top right, clear of the island.
@@ -75,7 +84,7 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
   async function create({ brain = null, target, title, prompt, tucked = false } = {}) {
     if (tasks.size >= MAX_TASKS) return { error: `You can have ${MAX_TASKS} tasks open at once. Close one first.` };
     const n = ++seq;
-    const t = { id: `t${n}`, n, title: title ? shorten(title) : `Task ${n}`, state: "idle", target: target === undefined ? await currentTarget() : target, pendingConfirm: null, busy: false };
+    const t = { id: `t${n}`, n, title: title ? shorten(title) : `Task ${n}`, state: "idle", target: target === undefined ? await currentTarget() : target, pendingConfirm: null };
     const ui = uiFor(t);
     if (brain) {
       brain.ui = { ...brain.ui, ...ui };
@@ -172,8 +181,7 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
 
   ipcMain.handle("task-ask", async (e, text) => {
     const t = fromSender(e.sender);
-    if (!t || t.busy || !String(text).trim()) return { reply: null };
-    t.busy = true;
+    if (!t || taskBusy(t.state) || !String(text).trim()) return { reply: null };
     if (t.title === `Task ${t.n}`) {
       t.title = shorten(text);
       t.win.setTitle(`Buddy · ${t.title}`);
@@ -187,7 +195,6 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
       if (tasks.has(t.id)) setState(t, "error", err.message);
       return { reply: `Something broke: ${err.message}`, title: t.title };
     } finally {
-      t.busy = false;
       release(t.id);
     }
   });

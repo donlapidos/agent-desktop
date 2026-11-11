@@ -32,3 +32,26 @@ export const BUSY = Object.freeze({
 
 /** @param {Mode} from @param {Mode} to */
 export const canMove = (from, to) => from === to || NEXT[from].includes(to);
+
+// Each task window (tasks.js) has a state of its own, shown on its chip:
+//   idle     nothing running: new, or its answer has been seen
+//   working  an answer is running (a status line may update it while it stays working)
+//   confirm  the answer waits for the user's OK on the task's card
+//   done     the answer finished while the window was tucked away or behind; seeing it makes it idle
+//   error    the answer failed; the next question starts it again
+/** @typedef {"idle" | "working" | "confirm" | "done" | "error"} TaskState */
+
+/** The moves each task state allows. @type {Readonly<Record<TaskState, readonly TaskState[]>>} */
+export const TASK_NEXT = Object.freeze({
+  idle: ["working"],
+  working: ["confirm", "done", "idle", "error"], // idle: it finished with its window in front
+  confirm: ["working"], // answered, or cancelled (a "no")
+  done: ["idle", "working"],
+  error: ["working"],
+});
+
+/** @param {TaskState} from @param {TaskState} to */
+export const canMoveTask = (from, to) => from === to || TASK_NEXT[from].includes(to);
+
+/** A task is busy while its answer runs, waiting for an OK included. @param {TaskState} state */
+export const taskBusy = (state) => state === "working" || state === "confirm";

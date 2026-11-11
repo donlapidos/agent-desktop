@@ -41,6 +41,7 @@ function scriptedModel() {
 
 /**
  * Runs Buddy with `env` until it prints `done` (or `timeoutMs` passes), and returns what it printed, by marker.
+ * Every copy's own timing.log is read afterwards: a refused mode or task-state change is a bug, whichever check hit it.
  * @returns {Promise<{ markers: Record<string, any[]>, log: string, timedOut: boolean }>}
  */
 function runCopy(name, env, done, timeoutMs = 90_000) {
@@ -62,6 +63,11 @@ function runCopy(name, env, done, timeoutMs = 90_000) {
       clearTimeout(timer);
       spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
       fs.writeFileSync(path.join(out, `${name}.log`), log);
+      try {
+        for (const line of fs.readFileSync(path.join(data, "timing.log"), "utf8").split(/\r?\n/)) {
+          if (/"kind":"refused-(mode-change|task-state)"/.test(line)) refusals.push(`${name}: ${line}`);
+        }
+      } catch {}
       resolve({ markers, log, timedOut });
     };
     const timer = setTimeout(() => finish(true), timeoutMs);
@@ -83,6 +89,9 @@ function runCopy(name, env, done, timeoutMs = 90_000) {
     child.on("exit", () => setTimeout(() => finish(false), 200));
   });
 }
+
+/** Refused state changes seen in any copy's log (see runCopy). */
+const refusals = [];
 
 // ---------- The checks ----------
 
@@ -209,6 +218,8 @@ for (const [name, c] of chosen) {
   } catch (err) {
     problems = [`crashed: ${err?.stack ?? err}`];
   }
+  // A state change the tables refused during this check is a bug, even if what the check looked at came out right.
+  problems.push(...refusals.splice(0).map((r) => `refused state change: ${r}`));
   const s = ((Date.now() - t0) / 1000).toFixed(1);
   if (problems.length) failed++;
   console.log(`${problems.length ? "FAIL" : "PASS"}  ${name.padEnd(10)} ${s.padStart(5)} s${problems.map((p) => `\n      ${p}`).join("")}`);
