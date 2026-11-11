@@ -3,11 +3,12 @@ import {
   app, BrowserWindow, clipboard, ClipboardItem, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, screen,
   session, shell, systemPreferences, Tray, webContents,
 } from "electron";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SAFE_TOOLS, startBridge } from "./bridge.js";
-import { APPS, APP_IDS, allowRules, appStatus, launchSpec, setApp, setCodeAllowed, staleApps } from "./ai-apps.js";
+import { APPS, APP_IDS, allowRules, appStatus, claudeCodeExe, launchSpec, quickChatArgs, quickChatConfig, setApp, setCodeAllowed, staleApps } from "./ai-apps.js";
 import { Brain, SESSION_PREFIX, failureFor, setAgentPolicy, setBrainDefaults, takeTurn } from "./brain.js";
 import { PROVIDERS, ProviderError, addressProblem, capsOf, describeModels, keyFits, listModels, noteTested, providerForKey, testedOf, useCapsStore, verdict } from "./providers.js";
 import { CASES, runEvals } from "./evals.js";
@@ -1304,6 +1305,29 @@ async function setClaude(/** @type {import("./ai-apps.js").AppId} */ which, /** 
   return error;
 }
 
+/**
+ * Opens a quick Claude Code chat in a terminal: only Buddy's tools, none of the user's plugins or hooks, so each turn
+ * is several times faster. Runs on their Claude plan. Resolves an error message, or null.
+ */
+async function openQuickChat() {
+  if (appStatus().code === "missing") return "Claude Code isn't on this PC.";
+  const mcpFile = path.join(app.getPath("userData"), "quick-chat-mcp.json");
+  fs.writeFileSync(mcpFile, quickChatConfig(appSpec("code")));
+  fs.mkdirSync(documentsDir(), { recursive: true });
+  const exe = claudeCodeExe();
+  const args = quickChatArgs(mcpFile, [...SAFE_TOOLS]);
+  const start = (/** @type {string} */ command, /** @type {string[]} */ argv) =>
+    new Promise((resolve) => {
+      const child = spawn(command, argv, { cwd: documentsDir(), detached: true, stdio: "ignore" });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => (child.unref(), resolve(true)));
+    });
+  // Windows Terminal when there is one, else a console window of its own.
+  const ok = (await start("wt.exe", ["-d", documentsDir(), "--title", "Buddy · Claude", exe, ...args])) || (await start(exe, args));
+  trace({ kind: "quick-chat", ok });
+  return ok ? null : "Couldn't start Claude Code.";
+}
+
 // Apps that start Buddy under an old name, from where Buddy used to be, or without saying which app they are, are
 // pointed at this Buddy.
 async function repairClaude() {
@@ -1534,6 +1558,7 @@ function buildTrayMenu() {
       { label: "New task window", click: () => newTask() },
       { type: "separator" },
       ...(updates?.state().status === "ready" ? [{ label: `Restart to update to ${updates.state().next}`, click: () => updates.install() }] : []),
+      ...(appStatus().code !== "missing" ? [{ label: "Quick chat in Claude Code", click: () => openQuickChat() }] : []),
       { label: "Recent changes…", click: () => settingsWindow.open("activity") },
       { label: "Settings…", click: () => settingsWindow.open() },
       { label: "Recreate shortcuts", visible: process.platform === "win32" && !app.isPackaged, click: writeShortcuts },

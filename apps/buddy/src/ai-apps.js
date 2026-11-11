@@ -189,6 +189,34 @@ export async function setApp(id, spec, p = HERE) {
   return res.ok ? null : `${a.label} said: ${res.text.slice(0, 200)}`;
 }
 
+// ---------- A quick Claude Code chat with only Buddy ----------
+// Claude Code as most people have it set up loads their plugins, hooks and other MCP servers on every turn. Measured
+// on one Buddy call: 30 s and 112k tokens of context as set up, 7.5 s and 69k with only Buddy (user settings left
+// out, so their plugins and hooks don't load; their Claude login still does, so it runs on their plan).
+
+const QUICK_PROMPT = "The user opened this chat from Desktop Buddy to get help with what's on their Windows screen. They are not a developer: use Buddy's tools (desktop-buddy) to look and to point the way, keep replies short and plain, and don't show commands or code unless they ask.";
+
+/** Claude Code's command, as a full path when its Windows installer put it in the usual place. */
+export function claudeCodeExe(p = HERE) {
+  const local = path.join(p.home, ".local", "bin", "claude.exe");
+  return fs.existsSync(local) ? local : "claude";
+}
+
+/**
+ * The arguments for a quick chat: only Buddy's server (from `mcpFile`), no user settings, Buddy's look-and-point
+ * tools allowed without a check.
+ * @param {string} mcpFile @param {string[]} safeTools
+ */
+export const quickChatArgs = (mcpFile, safeTools) => [
+  "--setting-sources", "project",
+  "--strict-mcp-config", "--mcp-config", mcpFile,
+  "--allowedTools", ...allowRules(safeTools),
+  "--append-system-prompt", QUICK_PROMPT,
+];
+
+/** The --mcp-config file for a quick chat. @param {LaunchSpec} spec */
+export const quickChatConfig = (spec) => JSON.stringify({ mcpServers: { [SERVER]: spec } }, null, 2);
+
 // ---------- Claude Code's allow rules ----------
 
 /** Claude Code's permission rules for Buddy's tools that only look, read, point or show (bridge.js SAFE_TOOLS). */

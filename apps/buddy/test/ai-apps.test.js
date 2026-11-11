@@ -134,3 +134,13 @@ test("Claude Code's settings file is changed only if Buddy can read it", () => {
   assert.equal(setCodeAllowed(["mcp__desktop-buddy__look"], true, file), null);
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).permissions.allow, ["Read", "mcp__desktop-buddy__look"]);
 });
+
+test("a quick Claude Code chat loads only Buddy, leaves the user's settings (plugins, hooks) out, and allows only the safe tools", async () => {
+  const { quickChatArgs, quickChatConfig } = await import("../src/ai-apps.js");
+  const args = quickChatArgs("C:\data\quick.json", SAFE_TOOLS);
+  assert.deepEqual(args.slice(0, 5), ["--setting-sources", "project", "--strict-mcp-config", "--mcp-config", "C:\data\quick.json"]);
+  const allowed = args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--append-system-prompt"));
+  assert.deepEqual(allowed, allowRules(SAFE_TOOLS));
+  assert.ok(!allowed.includes("mcp__desktop-buddy__act"));
+  assert.deepEqual(Object.keys(JSON.parse(quickChatConfig(specFor("code"))).mcpServers), ["desktop-buddy"]);
+});
