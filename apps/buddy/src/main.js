@@ -869,6 +869,24 @@ async function finishMarking({ image, strokes } = {}) {
 }
 
 const fromMarker = (e) => markWin && e.sender === markWin.webContents;
+
+// Each window's messages are taken only from that window: every Buddy page shares one preload (and so could call any
+// of them), but only the bubble answers its approval card or asks a question, only the island acts for the island.
+// A message from anywhere else is refused and logged; it would mean a page was made to do what it never does.
+const fromBubble = (/** @type {Electron.IpcMainEvent | Electron.IpcMainInvokeEvent} */ e) => !!bubble && !bubble.isDestroyed() && e.sender === bubble.webContents;
+const fromIsland = (/** @type {Electron.IpcMainEvent | Electron.IpcMainInvokeEvent} */ e) => !!island && !island.isDestroyed() && e.sender === island.webContents;
+/** @param {(e: any) => boolean} check @param {string} channel @param {(e: Electron.IpcMainEvent, ...args: any[]) => void} fn */
+function onFrom(check, channel, fn) {
+  ipcMain.on(channel, (e, ...args) => (check(e) ? fn(e, ...args) : trace({ kind: "refused-ipc", channel })));
+}
+/** @param {(e: any) => boolean} check @param {string} channel @param {(e: Electron.IpcMainInvokeEvent, ...args: any[]) => any} fn */
+function handleFrom(check, channel, fn) {
+  ipcMain.handle(channel, (e, ...args) => {
+    if (check(e)) return fn(e, ...args);
+    trace({ kind: "refused-ipc", channel });
+    throw new Error(`${channel} isn't taken from this window`);
+  });
+}
 ipcMain.on("mark-ready", (e) => {
   if (!fromMarker(e)) return;
   markWin.show();
@@ -886,7 +904,7 @@ ipcMain.on("mark-count", (e, n) => {
 ipcMain.on("mark-finish", (e, result) => {
   if (fromMarker(e)) finishMarking(result);
 });
-ipcMain.on("mark-cancel", () => cancelMarking());
+ipcMain.on("mark-cancel", (e) => fromMarker(e) && cancelMarking());
 // A single click in mark mode (before anything is drawn) explains the thing clicked.
 ipcMain.on("mark-click", (e, local) => {
   if (!fromMarker(e) || !local) return;
@@ -958,7 +976,7 @@ function openExplainer(explainer, { near = cursor(), observed = null } = {}) {
 
 // ---------- IPC ----------
 
-ipcMain.handle("ask", async (_e, text, opts = {}) => {
+handleFrom(fromBubble, "ask", async (_e, text, opts = {}) => {
   if (!brain) return { reply: "Choose how I think first, in Settings › AI & privacy: an API key (Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek), or a free model on this PC with Ollama or LM Studio. Or ask me from the AI app you already use (Claude, Codex, Gemini, Copilot): Use with your AI app, in the same place." };
   // Typed while the mic was open: the typing wins.
   if (mode === "listening") voice.cancelListening();
@@ -1016,37 +1034,37 @@ async function setAddress(/** @type {string} */ url) {
   return null;
 }
 
-ipcMain.handle("set-key", async (_e, key) => {
+handleFrom(fromBubble, "set-key", async (_e, key) => {
   const error = await setApiKey(String(key ?? ""));
   return { ok: !error && !!brain, error };
 });
 
 // Stop or Esc in the bubble. While the bubble's own answer runs, that answer stops (and withdraws its request on the
 // card); otherwise the card on show is for an AI app using Buddy, and Stop says no to it.
-ipcMain.on("cancel", () => {
+onFrom(fromBubble, "cancel", () => {
   voice?.cancelListening();
   voice?.hush();
   if (mode === "working") brain?.cancel();
   else answerApproval("deny");
 });
-ipcMain.on("reset", () => {
+onFrom(fromBubble, "reset", () => {
   brain?.reset();
   clearMarks();
 });
-ipcMain.on("hide", () => {
+onFrom(fromBubble, "hide", () => {
   voice?.hush();
   hideBubble();
 });
-ipcMain.on("confirm-reply", (_e, decision) => {
+onFrom(fromBubble, "confirm-reply", (_e, decision) => {
   trace({ kind: "confirm-reply", decision, waiting: approvals.size() });
   answerApproval(decision);
 });
 let islandHovered = false;
-ipcMain.on("island-hover", (_e, inside) => {
+onFrom(fromIsland, "island-hover", (_e, inside) => {
   islandHovered = !!inside;
   island.setIgnoreMouseEvents(!inside, { forward: true });
 });
-ipcMain.on("island-action", (_e, action) => {
+onFrom(fromIsland, "island-action", (_e, action) => {
   const [verb, id] = String(action).split(":");
   if (verb === "ask") summon();
   else if (verb === "settings") settingsWindow.open();
@@ -1069,7 +1087,7 @@ ipcMain.on("island-action", (_e, action) => {
 
 // While the island previews a task, refresh the picture of its window.
 let peekTimer = null;
-ipcMain.on("task-peek", (_e, id) => {
+onFrom(fromIsland, "task-peek", (_e, id) => {
   clearInterval(peekTimer);
   peekTimer = null;
   if (!id) return;
@@ -1098,6 +1116,8 @@ const approvals = createApprovalQueue({
     showIsland();
   },
   trace,
+  // As on the card itself: an answer in the card's first half second is a click that was already on its way.
+  armMs: 500,
 });
 const waitingForOk = () => approvals.size() > 0;
 
@@ -1217,7 +1237,7 @@ function speak(text) {
   saying = oneLine(text);
   voice.say(text);
 }
-ipcMain.on("talk", () => talk());
+onFrom(fromBubble, "talk", () => talk());
 
 let downloadSettle = null; // returns the island to rest once download progress stops coming
 function onVoiceState(state, info) {
@@ -1487,7 +1507,7 @@ async function newTask({ fromBubble = false } = {}) {
   if (result.error) notice(result.error);
   else hideBubble({ now: true });
 }
-ipcMain.on("new-task", () => newTask({ fromBubble: true }));
+onFrom(fromBubble, "new-task", () => newTask({ fromBubble: true }));
 
 // ---------- Tray ----------
 
@@ -1844,7 +1864,7 @@ function startUpdates() {
   });
   updates.start();
 }
-ipcMain.on("open-settings", () => settingsWindow.open());
+onFrom(fromBubble, "open-settings", () => settingsWindow.open());
 
 app.whenReady().then(() => {
   const loaded = loadSettings(settingsFile());
@@ -2182,6 +2202,10 @@ app.whenReady().then(() => {
       }
       const card = carded ? await bubble.webContents.executeJavaScript(`document.getElementById("what").textContent`) : null;
       await wait(700);
+      // Another Buddy window (here the island) can't answer the bubble's card, though it has the same preload.
+      island.webContents.executeJavaScript(`window.buddy.confirmReply("allow")`);
+      await wait(400);
+      const otherWindowRefused = await bubble.webContents.executeJavaScript(`document.getElementById("confirm").classList.contains("on")`);
       if (carded) await bubble.webContents.executeJavaScript(`document.querySelector('#confirm [data-d="allow"]').click()`);
       const { reply } = await answer;
       const file = path.join(documentsDir(), "Shopping list.txt");
@@ -2193,7 +2217,7 @@ app.whenReady().then(() => {
       const page = win ? await win.webContents.executeJavaScript(`document.getElementById("page-activity").hidden ? null : document.getElementById("activity").innerText`) : null;
       if (win && process.env.BUDDY_FILES_TEST_OUT) fs.writeFileSync(process.env.BUDDY_FILES_TEST_OUT, (await win.webContents.capturePage()).toPNG());
       const undone = listed[0] ? await activity?.undo(listed[0].id) : null;
-      console.log("FILES_TEST", JSON.stringify({ card, reply, made, listed: listed.map((e) => ({ kind: e.kind, summary: e.summary, canUndo: e.canUndo })), page, undone, goneAfterUndo: !fs.existsSync(file) }));
+      console.log("FILES_TEST", JSON.stringify({ card, otherWindowRefused, reply, made, listed: listed.map((e) => ({ kind: e.kind, summary: e.summary, canUndo: e.canUndo })), page, undone, goneAfterUndo: !fs.existsSync(file) }));
       console.log("FILES_TEST_DONE");
     }, 2500);
   } else if (!brain) summon();

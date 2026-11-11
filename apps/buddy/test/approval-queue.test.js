@@ -75,3 +75,24 @@ test("a stopped answer doesn't hang on its approval card", async () => {
   assert.equal(settled, "settled");
   assert.equal(q.size(), 0, "and it's off the card");
 });
+
+test("an answer in the card's first half second doesn't count; one after it does", async () => {
+  let t = 1000;
+  const q = createApprovalQueue({ show: () => {}, clear: () => {}, armMs: 500, now: () => t });
+  const p = q.ask("Click Save", null);
+  t += 200;
+  assert.equal(q.answer("allow"), false, "a click already on its way when the card appeared");
+  assert.equal(q.size(), 1);
+  t += 400;
+  assert.equal(q.answer("allow"), true);
+  assert.equal(await p, "allow");
+  const next = q.ask("Click Bold", null);
+  const after = q.ask("Click Italic", null);
+  t += 600;
+  q.answer("deny");
+  assert.equal(await next, "deny");
+  assert.equal(q.answer("allow"), false, "the next request on the card arms afresh");
+  t += 600;
+  q.answer("allow");
+  assert.equal(await after, "allow");
+});

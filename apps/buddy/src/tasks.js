@@ -7,6 +7,7 @@ import { canMoveTask, taskBusy } from "./modes.js";
 
 const TASK = { width: 420, height: 560 };
 const MAX_TASKS = 6;
+const ARM_MS = 500;
 
 const shorten = (text, n = 34) => {
   const t = String(text).replace(/\s+/g, " ").trim();
@@ -70,6 +71,7 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
         if (bounds) point(bounds, summaryText, t.id);
         if (!t.win.isVisible()) t.win.showInactive();
         setState(t, "confirm", `Waiting for your OK: ${summaryText}`);
+        t.confirmAt = Date.now();
         send(t, "task-confirm", { summary: summaryText, note });
         return new Promise((resolve) => (t.pendingConfirm = resolve));
       },
@@ -157,8 +159,10 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
     t.win.focus();
   }
 
-  function reply(t, decision) {
+  function reply(t, decision, { cancel = false } = {}) {
     if (!t?.pendingConfirm) return;
+    // As on the card: an answer in its first half second was a click already on its way. A cancel always counts.
+    if (!cancel && Date.now() - (t.confirmAt ?? 0) < ARM_MS) return trace?.({ kind: "confirm-too-soon", task: t.id });
     t.pendingConfirm(decision);
     t.pendingConfirm = null;
     send(t, "task-confirm-done");
@@ -202,7 +206,7 @@ export function createTasks({ here, icon, makeBrain, currentTarget, point, relea
     const t = fromSender(e.sender);
     if (!t) return;
     t.brain.cancel();
-    reply(t, "deny");
+    reply(t, "deny", { cancel: true });
   });
   ipcMain.on("task-confirm-reply", (e, decision) => reply(fromSender(e.sender), decision));
   ipcMain.on("task-minimize", (e) => fromSender(e.sender)?.win.hide());

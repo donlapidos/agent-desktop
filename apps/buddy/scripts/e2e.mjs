@@ -117,6 +117,7 @@ const CHECKS = {
       if (!r) return [timedOut ? "timed out before the check finished" : "the check printed nothing"];
       return [
         !/^Create Shopping list\.txt in /.test(r.card ?? "") && `approval card said ${JSON.stringify(r.card)}`,
+        r.otherWindowRefused !== true && "another Buddy window could answer the bubble's approval card",
         r.reply !== "Made your shopping list." && `reply was ${JSON.stringify(r.reply)}`,
         !/Eggs[\s\S]*Milk[\s\S]*Bread/.test(r.made ?? "") && "the file wasn't made with the list",
         !(markers.REVEALED?.[0] ?? []).some((f) => f.endsWith("Shopping list.txt")) && "the made file wasn't shown",
